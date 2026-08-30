@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Temporary
+Temp*/
+temp/
+.tmp/
+.cache/
+
+# Test / Backup
+测试/
+测试*/
+test/
+backup/
+.backup/
+
+# Input / Output
+input/
+output/
+Download/
+download/
+Extracted/
+
+# Audio / Voice
+audio/
+Voice/
+
+# Game extraction
+FlatData/
+BAJpApkSrc/
+BA-APKSRC/
+BA-TableBundles/
+BA-Text/
+
+# Unity generated / extracted files
+*.bytes
+*Catalog*.json
+*Manifest*
+BundlePackingInfo*
+
+# Database / Packages
+*.db
+*.zip
+*.apk
+
+# Secrets / local configuration
+.env
+.env.*
+.script_cfg
+account.json
+
+# Decompiled / generated code
+dump.cs
