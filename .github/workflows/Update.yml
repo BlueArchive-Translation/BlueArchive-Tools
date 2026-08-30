@@ -9,16 +9,23 @@ permissions:
   contents: write
   actions: write
 
+concurrency:
+  group: update
+  cancel-in-progress: true
+
 jobs:
   update:
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         server: [JP, JPPC, GL, CN]
+
     runs-on: ubuntu-latest
+
     env:
       PYTHONUTF8: 1
       PYTHONUNBUFFERED: "1"
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -73,11 +80,28 @@ jobs:
           python update.py ${{ matrix.server }}
 
       - name: 重新运行
+        env:
+          GH_TOKEN: ${{ secrets.UPDATE_TOKEN }}
+        shell: bash
         run: |
+          echo "触发下一轮 Update..."
+
           curl -X POST \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: token ${{ secrets.UPDATE_TOKEN }}" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             https://api.github.com/repos/${{ github.repository }}/dispatches \
           -d '{"event_type": "restart"}'
+
+          echo "下一轮 Update 已触发。"
+
+          echo "终止当前 Workflow..."
+
+          curl -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: token ${{ secrets.UPDATE_TOKEN }}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/cancel
+
+          echo "取消请求已发送。"
 
