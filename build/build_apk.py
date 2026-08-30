@@ -389,7 +389,7 @@ class ApkUpdater:
 
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
-        apk_url, version = Server().get_apk_url()
+        apk_url, version = Server(self.server).get_apk_url()
         FileDownloader(
             url=apk_url,
             headers={"User-Agent": "Androidkb"}
@@ -608,6 +608,7 @@ class ApkUpdater:
         modifybundle: bool = True,
     ):
         try:
+            version = self.download()
             self.prepare()
 
             # 修改压缩规则

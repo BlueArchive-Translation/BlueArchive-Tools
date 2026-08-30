@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 
 def run_update(regions, server):
     env_file = Config.env_file.format(server=regions)
-    load_dotenv(env_file)
+    load_dotenv(env_file, override=True)
     
     local_version = os.getenv("GameVersion")
     cached_server_url = os.getenv("ServerInfoDataUrl")
@@ -123,6 +123,10 @@ def run_update(regions, server):
     if env_changed:
         with open(env_file, "w", encoding="utf-8") as f:
             f.writelines(new_env_content)
+
+        # 重新加载最新环境变量，覆盖当前进程中的旧值
+        load_dotenv(env_file, override=True)
+
         print(f"{env_file} 配置同步完成。")
 
         if regions == "JP":
@@ -153,7 +157,7 @@ def run_update(regions, server):
         dumper.compile_python(os.path.join(os.path.abspath("Dumps"), "dump.cs"), "FlatData")
         print("成功生成FlatData库。")
         shutil.rmtree("Temp")
-    return env_changed, major
+    return env_changed, major, version
 
 
 def main():
@@ -175,7 +179,7 @@ def main():
         try:
             print(f"开始检查 {args.server} 更新。")
 
-            changed, major = run_update(args.server, server)
+            changed, major, version = run_update(args.server, server)
 
             if changed:
                 print("检测到配置发生变化，开始提交 Git。")
@@ -254,7 +258,7 @@ def main():
 
                             env_file = Config.env_file.format(server=args.server)
 
-                            load_dotenv(env_file)
+                            load_dotenv(env_file, override=True)
                             server_info_url = os.getenv("ServerInfoDataUrl")
 
                             modified_url = server_info_url.replace(
@@ -292,7 +296,7 @@ def main():
                                 modifybundle=True,
                             )
 
-                            server = SSHServer(
+                            ssh_server = SSHServer(
                                 host=os.environ["SERVER_HOST"],
                                 username="root",
                                 password=os.environ["SERVER_PASSWORD"],
@@ -303,17 +307,17 @@ def main():
 
                             print("正在检查服务器连接...")
 
-                            if not server.test_connection():
+                            if not ssh_server.test_connection():
                                 raise RuntimeError("服务器连接失败")
 
                             print("服务器连接成功")
 
                             print("正在检查远程目录...")
 
-                            if not server.is_dir(remote_directory):
+                            if not ssh_server.is_dir(remote_directory):
                                 print("web_download 文件夹不存在，正在创建...")
 
-                                server.mkdir(
+                                ssh_server.mkdir(
                                     remote_directory,
                                     parents=True
                                 )
@@ -324,8 +328,8 @@ def main():
 
                             print("开始上传Android客户端...")
 
-                            server.upload_file(
-                                str(final_apk),
+                            ssh_server.upload_file(
+                                "蔚蓝档案.apk",
                                 "/var/www/web_download/蔚蓝档案.apk",
                                 create_parent=False
                             )
