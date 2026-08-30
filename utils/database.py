@@ -1,5 +1,5 @@
 from utils.sqlcipher import sqlite3
-from lib.structure import DBColumn, DBTable
+from utils.structure import DBColumn, DBTable
 
 
 class TableDatabase:

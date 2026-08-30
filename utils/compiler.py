@@ -4,8 +4,8 @@ import os
 import re
 from enum import Enum
 
-from lib.structure import EnumMember, EnumType, Property, StructTable
-from lib.console import notice
+from utils.structure import EnumMember, EnumType, Property, StructTable
+from utils.console import notice
 from utils.util import TemplateString, Utils
 
 

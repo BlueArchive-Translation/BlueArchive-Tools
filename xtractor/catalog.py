@@ -2,8 +2,7 @@ import io
 import struct
 import json
 import os
-from utils.util import CommandUtils, ZipUtils, ToolManager
-from lib.downloader import FileDownloader
+from utils.util import CommandUtils, ZipUtils, ToolManager, FileDownloader
 
 class CNCatalog:
     def __init__(self, raw_data):

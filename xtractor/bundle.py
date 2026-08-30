@@ -17,9 +17,8 @@ from os import path
 from typing import Any, Literal, List, Optional, Union, Dict
 
 from PIL import Image
-from lib.console import ProgressBar
-from lib.downloader import FileDownloader
-from utils.util import ZipUtils, ToolManager
+from utils.console import ProgressBar
+from utils.util import ZipUtils, ToolManager, FileDownloader
 
 def build_asset_index(extractor: "BundleExtractor", folder_path: str) -> Dict[str, List[dict]]:
     """

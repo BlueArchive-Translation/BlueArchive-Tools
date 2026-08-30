@@ -8,9 +8,9 @@ from typing import Any, Union
 from zipfile import ZipFile, ZIP_DEFLATED
 import flatbuffers
 
-from lib.console import notice
-from lib.encryption import xor_with_key, zip_password
-from lib.structure import DBTable, SQLiteDataType
+from utils.console import notice
+from utils.encryption import xor_with_key, zip_password
+from utils.structure import DBTable, SQLiteDataType
 from utils.database import TableDatabase
 from utils.config import Config
 from utils.util import ZipUtils
