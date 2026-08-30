@@ -252,7 +252,28 @@ def main():
                         else:
                             print("没有检测到FlatData变动，跳过提交。")
 
+                if args.server != "JPPC":
+                    types = ["Table"]
+                    if args.server in ("GL", "CN"):
+                        types.append("Voice")
+                    if args.server == "JP":
+                        types.append("RepackTable")
 
+                    for event_type in types:
+                        payload = {
+                            "server": args.server,
+                            "platform": "auto",
+                            "modify_name": "false",
+                            "debug": "false",
+                            "voice_lang": "Default",
+                            "catalog": "true",
+                            "upload": "true"
+                        }
+                        git.dispatch(event_type, payload)
+
+                # 调换先后顺序，build占用导致请求发送慢了
+                if major:
+                    if args.server != "JPPC":
                         if args.server == "JP":
                             print("大版本更新且为 JP，密钥已变动，触发 JP APK 部署。")
 
@@ -397,26 +418,6 @@ def main():
                             print("BA-PC-SRC上传完成。")
                         else:
                             print("BA-PC-SRC没有检测到变动，跳过提交。")
-
-                if args.server != "JPPC":
-#                    types = ["Table"]
-                    types = []
-#                    if args.server in ("GL", "CN"):
-#                        types.append("Voice")
-#                    if args.server == "JP":
-#                        types.append("RepackTable")
-
-                    for event_type in types:
-                        payload = {
-                            "server": args.server,
-                            "platform": "auto",
-                            "modify_name": "false",
-                            "debug": "false",
-                            "voice_lang": "Default",
-                            "catalog": "true",
-                            "upload": "true"
-                        }
-                        git.dispatch(event_type, payload)
 
                 print("Git提交完成，程序退出。")
                 break
