@@ -306,7 +306,7 @@ class ZipUtils:
             else:
                 with ZipFile(dest_zip, "w", compression=compression) as z:
                     for file in files_to_add:
-                        arcname = os.path.relpath(file, base_dir) if base_dir else os.path.basename(file)
+                        arcname = os.path.normpath(file) if base_dir == "" else os.path.relpath(file, base_dir)
                         z.write(file, arcname)
                         if bar:
                             bar.increase()
