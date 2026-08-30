@@ -1,0 +1,11 @@
+cloudscraper==1.2.71
+flatbuffers==25.12.19
+lib==4.0.0
+Pillow==12.3.0
+pycryptodome==3.23.0
+pydub==0.25.1
+pyminizip==0.2.6
+Requests==2.34.2
+setuptools==84.0.0
+tqdm==4.70.0
+xxhash==4.0.1

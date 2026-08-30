@@ -17,7 +17,7 @@ from utils.util import ZipUtils
 
 class TableProcess:
     def __init__(
-        self, table_file_folder: str, extract_folder: str, flat_data_module_name: str
+        self, server: str = "JP", password: str = "", table_file_folder: str = "", extract_folder: str = "", flat_data_module_name: str = "FlatData"
     ) -> None:
         """Extract files in table folder.
 
@@ -28,6 +28,8 @@ class TableProcess:
         """
         self.table_file_folder = table_file_folder
         self.extract_folder = extract_folder
+        self.server = server
+        self.password = password
         self.flat_data_module_name = flat_data_module_name
 
         self.lower_fb_name_modules: dict[str, type] = {}
@@ -131,7 +133,7 @@ class TableProcess:
             bytes_output = bytes(builder.Output())
 
             # 与解压同流程加密
-            if not (file_name.endswith(".bytes") and Config.server == "CN") and xor_encrypt:
+            if not (file_name.endswith(".bytes") and self.server == "CN") and xor_encrypt:
                 bytes_output = xor_with_key(class_name, bytes_output)
             
             return bytes_output, f"{base_name}.bytes"
@@ -164,7 +166,7 @@ class TableProcess:
         Returns:
             list[DBTable]: A list of DBTables.
         """
-        with TableDatabase(file_path) as db:
+        with TableDatabase(file_path, self.password) as db:
             tables = []
 
             table_list = [table_name] if table_name else db.get_table_list()
@@ -340,7 +342,7 @@ class TableProcess:
             
             db_path = path.join(self.table_file_folder, file_name)
 
-            with TableDatabase(db_path) as db:
+            with TableDatabase(db_path, self.password) as db:
                 json_files = [f for f in os.listdir(db_extract_folder) if f.endswith(".json")]
                 total_files = len(json_files)
                 

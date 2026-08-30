@@ -17,7 +17,6 @@ from zipfile import ZipFile, ZIP_DEFLATED
 from cloudscraper import create_scraper
 from utils.console import ProgressBar, notice, bar_increase, print
 from utils.config import Config
-from utils.compiler import CompileToPython, CSParser
 
 class TemplateString:
     """
@@ -791,6 +790,7 @@ class IL2CppDumper(ToolManager):
         extract_dir: str
     ) -> None:
         """Compile dump.cs into Python callable modules."""
+        from utils.compiler import CompileToPython, CSParser
 
         print("Parsing dump.cs...")
 

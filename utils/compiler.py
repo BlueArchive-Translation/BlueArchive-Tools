@@ -8,7 +8,6 @@ from utils.structure import EnumMember, EnumType, Property, StructTable
 from utils.console import notice
 from utils.util import TemplateString, Utils
 
-
 class DataSize(Enum):
     bool = 1
     byte = 1
