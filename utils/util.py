@@ -15,7 +15,7 @@ from time import sleep, time
 from keyword import kwlist
 from zipfile import ZipFile, ZIP_DEFLATED
 from cloudscraper import create_scraper
-from utils.console import ProgressBar, notice, bar_increase, print
+from utils.console import ProgressBar, notice, bar_increase
 from utils.config import Config
 
 class TemplateString:
@@ -182,7 +182,7 @@ class ZipUtils:
         keywords: list[str] | None = None,
         zips_dir: str = "",
         password: bytes = bytes(),
-        progress_bar: bool = True,
+        progress_bar: bool = False,
     ) -> list[str]:
         """Extracts specific files from a zip archive(s) to a destination directory.
 

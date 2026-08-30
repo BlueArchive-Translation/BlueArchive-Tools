@@ -7,7 +7,6 @@ from dotenv import load_dotenv
 from utils.regions import Server
 from utils.config import Config
 from utils.util import FileUtils, IL2CppDumper, ZipUtils
-from utils.console import notice
 from utils.cloudflare import CF
 from utils.server import SSHServer
 from utils.git import Git
@@ -39,7 +38,7 @@ def run_update(regions, server):
 
     # GameVersion大版本更新
     if major:
-        notice(f"检测到GameVersion大版本更新: {local_version} -> {version}")
+        print(f"检测到GameVersion大版本更新: {local_version} -> {version}")
 
         if regions == "JP":
             cf.kv.put(
@@ -53,7 +52,7 @@ def run_update(regions, server):
             print("KV更新成功")
         server.main(apk_url, version)
     else:
-        notice(f"GameVersion大版本一致 ({version})，尝试增量检查。")
+        print(f"GameVersion大版本一致 ({version})，尝试增量检查。")
 
     if regions == "JPPC":
         latest_ver, file_path, res_ver = server.get_game_launcher_config(version)
@@ -61,7 +60,7 @@ def run_update(regions, server):
         major_pc = local_latest_version != latest_ver
         # LatestVersion大版本更新
         if major_pc:
-            notice(f"检测到LatestVersion大版本更新: {local_latest_version} -> {latest_ver}")
+            print(f"检测到LatestVersion大版本更新: {local_latest_version} -> {latest_ver}")
             cf.kv.put(
                 "Windows_Official",
                 {
@@ -73,7 +72,7 @@ def run_update(regions, server):
             print("KV更新成功")
             server.download_launcher_assets(res_ver, zip_url, ["resources.assets", "resources.assets.resS"], "Temp/assets/bin/Data")
         else:
-            notice(f"LatestVersion大版本一致 ({latest_ver})，尝试增量检查。")
+            print(f"LatestVersion大版本一致 ({latest_ver})，尝试增量检查。")
 
     if regions == "GL":
         server_url, platform_id, channel_id = server.get_server_url(version)
@@ -124,7 +123,7 @@ def run_update(regions, server):
     if env_changed:
         with open(env_file, "w", encoding="utf-8") as f:
             f.writelines(new_env_content)
-        notice(f"{env_file} 配置同步完成。")
+        print(f"{env_file} 配置同步完成。")
 
         if regions == "JP":
             for table_name in ["Table_Official", "Voice_Official", "Media_Official"]:
@@ -137,7 +136,7 @@ def run_update(regions, server):
                 )
             print("KV更新成功")
     else:
-        notice(f"{env_file} 配置无更新。")
+        print(f"{env_file} 配置无更新。")
 
     # 后续 Dumper 逻辑（非 JPPC 且是大版本时运行）
     if major and regions != "JPPC":
@@ -150,9 +149,9 @@ def run_update(regions, server):
         # 这里直接用cn的方式，fl已适配
         dumper.dump_il2cpp("cn", "", metadata_path, os.path.abspath("Dumps/dump.cs"))
 
-        notice("成功生成dump.cs。")
+        print("成功生成dump.cs。")
         dumper.compile_python(os.path.join(os.path.abspath("Dumps"), "dump.cs"), "FlatData")
-        notice("成功生成FlatData库。")
+        print("成功生成FlatData库。")
         shutil.rmtree("Temp")
     return env_changed, major
 
@@ -174,12 +173,12 @@ def main():
 
     while time.time() - start_time < timeout:
         try:
-            notice(f"开始检查 {args.server} 更新。")
+            print(f"开始检查 {args.server} 更新。")
 
             changed, major = run_update(args.server, server)
 
             if changed:
-                notice("检测到配置发生变化，开始提交 Git。")
+                print("检测到配置发生变化，开始提交 Git。")
 
                 git.pull()
                 git.add(Config.env_file.format(server=args.server))
@@ -189,7 +188,7 @@ def main():
                 if major:
                     if args.server != "JPPC":
                         version_name = server.get_version_name()
-                        notice(f"当前FlatData版本名称: {version_name}")
+                        print(f"当前FlatData版本名称: {version_name}")
 
                         zip_path = f"{version_name}.zip"
                         ZipUtils.create_zip(
@@ -197,12 +196,12 @@ def main():
                             zip_path,
                             progress_bar=True
                         )
-                        notice(f"FlatData打包完成: {zip_path}")
+                        print(f"FlatData打包完成: {zip_path}")
 
                         flatdata_dir = "BA-FlatData"
 
                         if not os.path.exists(flatdata_dir):
-                            notice("未找到BA-FlatData目录，开始克隆仓库。")
+                            print("未找到BA-FlatData目录，开始克隆仓库。")
                             git.clone(Config.FlatData, flatdata_dir)
 
                         flatdata_git = Git(flatdata_dir)
@@ -220,7 +219,7 @@ def main():
                         flatdata_git.commit(f"上传{version_name}.zip")
                         flatdata_git.push("main")
 
-                        notice(f"ZIP上传完成: {zip_path}")
+                        print(f"ZIP上传完成: {zip_path}")
 
                         # 上传FlatData到服务器分支
                         flatdata_git.fetch(args.server)
@@ -245,13 +244,13 @@ def main():
                                 f"提交FlatData，版本{version_name}"
                             )
                             flatdata_git.push(args.server)
-                            notice(f"{args.server}分支FlatData上传完成。")
+                            print(f"{args.server}分支FlatData上传完成。")
                         else:
-                            notice("没有检测到FlatData变动，跳过提交。")
+                            print("没有检测到FlatData变动，跳过提交。")
 
 
                         if args.server == "JP":
-                            notice("大版本更新且为 JP，密钥已变动，触发 JP APK 部署。")
+                            print("大版本更新且为 JP，密钥已变动，触发 JP APK 部署。")
 
                             env_file = Config.env_file.format(server=args.server)
 
@@ -263,13 +262,13 @@ def main():
                                 "bluearchive.help"
                             )
 
-                            notice(f"修改后ServerInfoDataUrl: {modified_url}")
+                            print(f"修改后ServerInfoDataUrl: {modified_url}")
 
                             # 检查 BA-APKSRC 仓库是否存在
                             apk_src_dir = "BA-APKSRC"
 
                             if not os.path.exists(apk_src_dir):
-                                notice("未找到BA-APKSRC目录，开始克隆仓库。")
+                                print("未找到BA-APKSRC目录，开始克隆仓库。")
                                 git.clone(Config.apk_src, apk_src_dir)
 
                             updater = ApkUpdater(
@@ -391,9 +390,9 @@ def main():
                         if pc_src_git.has_staged_changes():
                             pc_src_git.commit("提交BA-PC-SRC")
                             pc_src_git.push("main", set_upstream=True)
-                            notice("BA-PC-SRC上传完成。")
+                            print("BA-PC-SRC上传完成。")
                         else:
-                            notice("BA-PC-SRC没有检测到变动，跳过提交。")
+                            print("BA-PC-SRC没有检测到变动，跳过提交。")
 
                 if args.server != "JPPC":
 #                    types = ["Table"]
@@ -415,20 +414,20 @@ def main():
                         }
                         git.dispatch(event_type, payload)
 
-                notice("Git提交完成，程序退出。")
+                print("Git提交完成，程序退出。")
                 break
 
-            notice("没有检测到更新，30秒后再次检查。")
+            print("没有检测到更新，30秒后再次检查。")
 
         except Exception as e:
-            notice(f"更新检查失败: {e}")
+            print(f"更新检查失败: {e}")
 
         if time.time() - start_time >= timeout:
             break
 
         time.sleep(30)
 
-    notice("检查结束，程序退出。")
+    print("检查结束，程序退出。")
 
 
 if __name__ == "__main__":
