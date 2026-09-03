@@ -9,17 +9,18 @@ import zipfile
 import io
 
 from pathlib import Path
-from typing import Optional
-
 from lxml import etree
 from distutils.dir_util import copy_tree
-
 from crcmanip.crc import CRC32
 from crcmanip.algorithm import apply_patch, consume
 
 from utils.util import CommandUtils, ZipUtils, FileUtils, FileDownloader
 from utils.apksigner import ApkSigner
 from utils.regions import Server
+from utils.cloudflare import CF
+from utils.server import SSHServer
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from xtractor.bundle import (
     BundleExtractor,
     build_asset_index,
@@ -28,7 +29,52 @@ from xtractor.bundle import (
 from utils.encryption import create_key, convert_string, encrypt_string, xor
 
 
-# ─────────────────────────── APK 更新器 ──────────────────────────
+# ─────────────────────────── 客户端配置 ──────────────────────────
+
+class ClientConfig:
+    SERVERS = {
+        "JP": {
+            "platform": "Android",
+            "data_path": "assets/bin/Data",
+            "replace_path": "assets",
+            "gt4_path": "assets/gt4.js",
+            "sdk_config_path": "assets/SDKConfigSettings.json",
+            "modify_login": True,
+        },
+        "JPiOS": {
+            "platform": "iOS",
+            "data_path": "Payload/BlueArchive.app/Data",
+            "replace_path": "Payload/BlueArchive.app/Data/Raw",
+            "gt4_path": "Payload/BlueArchive.app/GTCaptcha4.bundle/gt4.js",
+            "sdk_config_path": "Payload/BlueArchive.app/SDKConfigSettings.json",
+            "modify_login": False,
+        },
+
+        # 预留：Windows
+        "JPPC": {
+            "platform": "Windows",
+        },
+
+        # 预留：Global
+        "GL": {
+            "platform": "Android",
+        },
+
+        # 预留：Global iOS
+        "GLiOS": {
+            "platform": "iOS",
+        },
+
+    }
+
+    @classmethod
+    def get(cls, server):
+        if server not in cls.SERVERS:
+            raise ValueError(f"不支持的服务器: {server}")
+        return cls.SERVERS[server]
+
+
+# ─────────────────────────── 客户端更新器 ──────────────────────────
 
 class ApkUpdater:
     def __init__(
@@ -39,23 +85,55 @@ class ApkUpdater:
     ):
         self.repo = Path(repo)
         self.server = server
+        self.config = ClientConfig.get(server)
+        self.platform = self.config["platform"]
         self.workers = max(1, min(workers, os.cpu_count() or 4))
 
         self.base_dir = Path("Temp")
         self.decoded_path = self.base_dir / "Decoded"
         self.temp_extract_path = self.base_dir / "TempExtract"
         self.main_output_path = self.base_dir / "MainOutput"
-        self.apk_path = self.base_dir / f"Temp_{server}.apk"
+        self.apk_path = self.base_dir / f"Temp_{server}.{'ipa' if self.is_ios else 'apk'}"
         self.dex_backup_path = self.base_dir / "DexBackup"
 
         self.raw_apk = Path("unaligned.apk")
         self.temp_align = Path("temp.apk")
-        self.final_apk = Path("蔚蓝档案.apk")
+        self.final_apk = Path("蔚蓝档案.ipa" if self.is_ios else "蔚蓝档案.apk")
 
         self.asset_index: dict = {}
         self.official_v1_signatures: dict[str, bytes] = {}
 
-    # ─────────────────────────── 基础 apktool 操作 ──────────────────────────
+    # ─────────────────────────── 平台属性 ──────────────────────────
+
+    @property
+    def is_ios(self):
+        return self.platform == "iOS"
+
+    @property
+    def is_android(self):
+        return self.platform == "Android"
+
+    @property
+    def is_windows(self):
+        return self.platform == "Windows"
+
+    @property
+    def data_path(self):
+        return self.main_output_path / self.config["data_path"]
+
+    @property
+    def replace_path(self):
+        return self.main_output_path / self.config["replace_path"]
+
+    @property
+    def gt4_path(self):
+        return self.main_output_path / self.config["gt4_path"]
+
+    @property
+    def sdk_config_path(self):
+        return self.main_output_path / self.config["sdk_config_path"]
+
+    # ─────────────────────────── APKTool ──────────────────────────
 
     def _run_apktool(self, args):
         success, error = CommandUtils.run_command(
@@ -77,6 +155,8 @@ class ApkUpdater:
         output_apk = Path(output_apk or self.raw_apk)
         print("正在打包……")
         return self._run_apktool(["b", str(input_dir), "-o", str(output_apk)])
+
+    # ─────────────────────────── APK 签名 ──────────────────────────
 
     def sign(self, apk_path=None, out_path=None):
         apk_path = Path(apk_path or self.final_apk)
@@ -100,10 +180,12 @@ class ApkUpdater:
         print("签名完成。")
         return True
 
-    # ─────────────────────────── 资源修改 ─────────────────────────────
+    # ─────────────────────────── Android Manifest ──────────────────────────
 
     def modify_manifest(self, trust_cert: bool = True):
-        """ 修改AndroidManifest.xml """
+        if not self.is_android:
+            return
+
         manifest_path = self.main_output_path / "AndroidManifest.xml"
         content = manifest_path.read_text(encoding="utf-8")
 
@@ -143,79 +225,101 @@ class ApkUpdater:
         )
         print("apk合并完成。")
 
-    def modify_resources(self, modifylogin: bool = True, modifygt4: str = "zho"):
-        """ 修改resources """
-        if modifylogin:
-            print("正在修改yostar登录文本。")
-            try:
-                res_data = json.loads(
-                    (self.repo / "resources.json").read_text(encoding="utf-8")
+    # ─────────────────────────── 登录文本 ──────────────────────────
+
+    def modify_login(self):
+        if not self.config.get("modify_login", False):
+            return
+
+        print("正在修改yostar登录文本。")
+        try:
+            res_data = json.loads(
+                (self.repo / "resources.json").read_text(encoding="utf-8")
+            )
+            ja_path = self.main_output_path / "res/values-ja/strings.xml"
+            content = ja_path.read_text(encoding="utf-8")
+            for item in res_data:
+                content = re.sub(
+                    rf'(?s)<string name="{re.escape(item["name"])}">.*?</string>',
+                    f'<string name="{item["name"]}">{item["text"]}</string>',
+                    content
                 )
-                ja_path = self.main_output_path / "res/values-ja/strings.xml"
-                content = ja_path.read_text(encoding="utf-8")
-                for item in res_data:
-                    content = re.sub(
-                        rf'(?s)<string name="{re.escape(item["name"])}">.*?</string>',
-                        f'<string name="{item["name"]}">{item["text"]}</string>',
-                        content
-                    )
-                ja_path.write_text(content, encoding="utf-8")
-                print("yostar登录文本修改完成。")
-            except Exception:
-                pass
+            ja_path.write_text(content, encoding="utf-8")
+            print("yostar登录文本修改完成。")
+        except Exception:
+            pass
 
-        if modifygt4:
-            print("正在修改极验校验文本。")
-            gt4_path = self.main_output_path / "assets" / "gt4.js"
-            if gt4_path.exists():
-                original_codec = CRC32()
-                with gt4_path.open("rb") as f:
-                    consume(original_codec, f)
-                original_crc_int = original_codec.digest()
+    # ─────────────────────────── GT4 ──────────────────────────
 
-                content = gt4_path.read_text(encoding="utf-8")
-                old_str = "lang: config.language? config.language : navigator.appName === 'Netscape' ? navigator.language.toLowerCase() : navigator.userLanguage.toLowerCase()"
-                if old_str in content:
-                    content = content.replace(old_str, f"lang: '{modifygt4}'")
+    def modify_gt4(self, modifygt4: str = "zho"):
+        if not modifygt4:
+            return
 
-                function_marker = "window.initGeetest4 = function (userConfig,callback) {"
-                insert_marker = "    var config = new Config(userConfig);"
-                if function_marker not in content or insert_marker not in content:
-                    raise RuntimeError("gt4.js 中未找到 initGeetest4 的 CRC 插入位置")
+        print("正在修改极验校验文本。")
+        gt4_path = self.gt4_path
 
-                crc_placeholder = '    userConfig._crcPatch = "";\n'
-                insert_at = content.index(insert_marker, content.index(function_marker))
-                content = content[:insert_at] + crc_placeholder + content[insert_at:]
-                data = content.encode("utf-8")
+        if not gt4_path.exists():
+            print(f"[跳过] 未找到gt4.js: {gt4_path}")
+            return
 
-                patch_marker = b'userConfig._crcPatch = "";'
-                target_pos = data.index(patch_marker) + len(b'userConfig._crcPatch = "')
+        original_codec = CRC32()
+        with gt4_path.open("rb") as f:
+            consume(original_codec, f)
+        original_crc_int = original_codec.digest()
 
-                output_io = io.BytesIO()
-                apply_patch(
-                    crc=CRC32(),
-                    target_checksum=original_crc_int,
-                    input_handle=io.BytesIO(data),
-                    output_handle=output_io,
-                    target_pos=target_pos,
-                    overwrite=False,
-                )
-                gt4_path.write_bytes(output_io.getvalue())
+        content = gt4_path.read_text(encoding="utf-8")
+        old_str = "lang: config.language? config.language : navigator.appName === 'Netscape' ? navigator.language.toLowerCase() : navigator.userLanguage.toLowerCase()"
+        if old_str in content:
+            content = content.replace(old_str, f"lang: '{modifygt4}'")
 
-                final_codec = CRC32()
-                with gt4_path.open("rb") as f:
-                    consume(final_codec, f)
-                final_crc = final_codec.digest()
+        function_marker = "window.initGeetest4 = function (userConfig,callback) {"
+        insert_marker = "    var config = new Config(userConfig);"
+        if function_marker not in content or insert_marker not in content:
+            raise RuntimeError("gt4.js 中未找到 initGeetest4 的 CRC 插入位置")
 
-                print(f"  --> gt4.js 原始 CRC: 0x{original_crc_int:08X}")
-                print(f"  --> gt4.js 最终 CRC: 0x{final_crc:08X}")
-                if final_crc != original_crc_int:
-                    raise RuntimeError("gt4.js CRC 修补失败")
-                print("gt4登录文本修改完成，CRC修补校验匹配。")
+        crc_placeholder = '    userConfig._crcPatch = "";\n'
+        insert_at = content.index(insert_marker, content.index(function_marker))
+        content = content[:insert_at] + crc_placeholder + content[insert_at:]
+        data = content.encode("utf-8")
+
+        patch_marker = b'userConfig._crcPatch = "";'
+        target_pos = data.index(patch_marker) + len(b'userConfig._crcPatch = "')
+
+        output_io = io.BytesIO()
+        apply_patch(
+            crc=CRC32(),
+            target_checksum=original_crc_int,
+            input_handle=io.BytesIO(data),
+            output_handle=output_io,
+            target_pos=target_pos,
+            overwrite=False,
+        )
+        gt4_path.write_bytes(output_io.getvalue())
+
+        final_codec = CRC32()
+        with gt4_path.open("rb") as f:
+            consume(final_codec, f)
+        final_crc = final_codec.digest()
+
+        print(f"  --> gt4.js 原始 CRC: 0x{original_crc_int:08X}")
+        print(f"  --> gt4.js 最终 CRC: 0x{final_crc:08X}")
+        if final_crc != original_crc_int:
+            raise RuntimeError("gt4.js CRC 修补失败")
+        print("gt4登录文本修改完成，CRC修补校验匹配。")
+
+    # ─────────────────────────── SDK ──────────────────────────
 
     def modify_sdk_url(self, sdkurl: str):
+        if not sdkurl:
+            return
+
         print("正在修改SDKConfigSettings.json。")
-        sdk_config_path = self.main_output_path / "assets" / "SDKConfigSettings.json"
+        sdk_config_path = self.sdk_config_path
+
+        if not sdk_config_path.exists():
+            raise FileNotFoundError(
+                f"未找到SDKConfigSettings.json: {sdk_config_path}"
+            )
 
         original_codec = CRC32()
         with sdk_config_path.open("rb") as f:
@@ -265,9 +369,14 @@ class ApkUpdater:
         print("  --> [成功] CRC 修补校验匹配！\n")
         print("SDKConfigSettings.json修改完成。")
 
+    # ─────────────────────────── GameMainConfig ──────────────────────────
+
     def modify_game_main_config(self, gamemainconfig: str):
+        if not gamemainconfig:
+            return
+
         print("正在修改GameMainConfig。")
-        data_folder = str(self.main_output_path / "assets" / "bin" / "Data")
+        data_folder = str(self.data_path)
         url_objs = BundleExtractor().search_unity_pack(
             data_folder,
             data_type=["TextAsset"],
@@ -320,6 +429,8 @@ class ApkUpdater:
         (modified_dir / "GameMainConfig").write_bytes(new_raw_script)
         print("GameMainConfig修改完成。")
 
+    # ─────────────────────────── Bundle ──────────────────────────
+
     def apply_bundle(self):
         print("正在替换Bundle资源。")
         modified_dir = self.repo / "Modified"
@@ -327,7 +438,7 @@ class ApkUpdater:
             return
 
         extractor = BundleExtractor()
-        data_folder = str(self.main_output_path / "assets" / "bin" / "Data")
+        data_folder = str(self.data_path)
 
         if not self.asset_index:
             print(f"正在扫描bundle目录建立索引: {data_folder}")
@@ -382,10 +493,13 @@ class ApkUpdater:
         success = sum(1 for _, ok in results if ok)
         print(f"bundle文件修改完成，成功 {success}/{len(results)}。")
 
-    # ─────────────────────────── 主流程 ─────────────────────────
+    # ─────────────────────────── 下载 ──────────────────────────
 
     def download(self):
-        print("正在下载APK。")
+        print(
+            "正在下载IPA。" if self.is_ios
+            else "正在下载APK。"
+        )
 
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
@@ -394,11 +508,13 @@ class ApkUpdater:
             url=apk_url,
             headers={"User-Agent": "Androidkb"}
         ).save_file(str(self.apk_path))
-        print(f"APK版本: {version}")
 
+        print(f"版本: {version}")
         return version
 
-    def prepare(self):
+    # ─────────────────────────── Android Prepare ──────────────────────────
+
+    def prepare_android(self):
         print("正在解压APK。")
         ZipUtils.extract_zip(
             str(self.apk_path),
@@ -419,7 +535,6 @@ class ApkUpdater:
         others = [a for a in apks if a != main_apk]
 
         print("正在提取APK V1签名校验。")
-        # 在清理解包目录前提取 config APK 中的官方 v1 签名，后续打包阶段直接复用。
         config_apk = next(
             (a for a in apks if "config" in a.lower()),
             None
@@ -447,7 +562,6 @@ class ApkUpdater:
             )
 
         print("正在备份DEX。")
-        # 备份dex
         self.dex_backup_path.mkdir(exist_ok=True)
 
         with zipfile.ZipFile(main_apk, "r") as z:
@@ -458,7 +572,6 @@ class ApkUpdater:
                 (self.dex_backup_path / dex).write_bytes(z.read(dex))
 
         print("正在合并APK。")
-        # 解包主APK并合并其它APK
         self.extract(main_apk, self.main_output_path)
         ZipUtils.extract_zip(others, str(self.temp_extract_path))
 
@@ -475,7 +588,44 @@ class ApkUpdater:
         self.apk_path.unlink()
         print("prepare流程完成。")
 
+    # ─────────────────────────── iOS Prepare ──────────────────────────
+
+    def prepare_ios(self):
+        print("正在解压IPA。")
+
+        if self.main_output_path.exists():
+            shutil.rmtree(self.main_output_path)
+
+        self.main_output_path.mkdir(
+            parents=True,
+            exist_ok=True
+        )
+
+        ZipUtils.extract_zip(
+            str(self.apk_path),
+            str(self.main_output_path)
+        )
+
+        app_path = self.main_output_path / "Payload" / "BlueArchive.app"
+        if not app_path.exists():
+            raise FileNotFoundError(
+                f"未找到BlueArchive.app: {app_path}"
+            )
+
+        self.apk_path.unlink()
+        print("IPA解包完成。")
+
+    def prepare(self):
+        if self.is_ios:
+            return self.prepare_ios()
+        return self.prepare_android()
+
+    # ─────────────────────────── APKTool YML ──────────────────────────
+
     def modify_apktool_yml(self):
+        if not self.is_android:
+            return
+
         print("正在添加mp4文件压缩。")
         yml_path = self.main_output_path / "apktool.yml"
         yml_content = yml_path.read_text(encoding="utf-8")
@@ -491,17 +641,24 @@ class ApkUpdater:
 
         print("APKToolyml修改完成。")
 
+    # ─────────────────────────── Replace ──────────────────────────
+
     def replace_resources(self):
         replace_dir = self.repo / "Replace"
         if replace_dir.exists():
             print("正在替换资源……")
             copy_tree(
                 str(replace_dir),
-                str(self.main_output_path / "assets")
+                str(self.replace_path)
             )
             print("资源替换完成。")
 
+    # ─────────────────────────── Trust Cert ──────────────────────────
+
     def install_trust_cert(self):
+        if not self.is_android:
+            return
+
         shutil.copy(
             str(self.repo / "network_security_config.xml"),
             str(
@@ -512,13 +669,14 @@ class ApkUpdater:
             )
         )
 
-    def rebuild(self):
+    # ─────────────────────────── Android Rebuild ──────────────────────────
+
+    def rebuild_android(self):
         print("正在构建APK。")
         self.build(self.main_output_path, self.raw_apk)
 
         print("正在恢复时间。")
-        # 压缩为apk，并恢复dex。保留官方 APK 的 v1 签名文件。
-        TARGET_DATE = (1981, 1, 1, 0, 0, 0)
+        target_date = (1981, 1, 1, 0, 0, 0)
 
         with zipfile.ZipFile(self.raw_apk, "r") as zin, zipfile.ZipFile(
             self.temp_align, "w"
@@ -527,7 +685,6 @@ class ApkUpdater:
                 if item.filename.startswith("classes") and item.filename.endswith(".dex"):
                     continue
 
-                # apktool/build 可能产生新的 v1 签名文件，必须丢弃，避免覆盖官方文件。
                 upper_name = item.filename.upper()
                 if (
                     upper_name.startswith("META-INF/")
@@ -538,7 +695,7 @@ class ApkUpdater:
                     continue
 
                 new_item = zipfile.ZipInfo(item.filename)
-                new_item.date_time = TARGET_DATE
+                new_item.date_time = target_date
                 new_item.external_attr = item.external_attr
                 new_item.compress_type = item.compress_type
                 zout.writestr(
@@ -546,16 +703,15 @@ class ApkUpdater:
                     zin.read(item.filename)
                 )
 
-            # 使用原版官方 META-INF 签名文件，不重新生成或修改其内容。
             for name, signature_data in self.official_v1_signatures.items():
                 new_item = zipfile.ZipInfo(name)
-                new_item.date_time = TARGET_DATE
+                new_item.date_time = target_date
                 new_item.compress_type = zipfile.ZIP_STORED
                 zout.writestr(new_item, signature_data)
 
             for dex_file in self.dex_backup_path.iterdir():
                 new_item = zipfile.ZipInfo(dex_file.name)
-                new_item.date_time = TARGET_DATE
+                new_item.date_time = target_date
                 new_item.compress_type = zipfile.ZIP_DEFLATED
                 zout.writestr(
                     new_item,
@@ -565,7 +721,6 @@ class ApkUpdater:
         self.raw_apk.unlink()
 
         print("正在对齐4字节。")
-        # 先将官方 v1 签名文件写入 APK，再执行 zipalign，最后交给自定义 ApkSigner 同时处理签名。
         success, error = CommandUtils.run_command(
             "zipalign",
             "-p",
@@ -581,8 +736,40 @@ class ApkUpdater:
         self.temp_align.unlink()
 
         print("正在签名APK。")
-        # 使用独立临时 APK 输出签名，完成后再覆盖最终 APK。
         self.sign(self.final_apk, self.final_apk)
+
+    # ─────────────────────────── iOS Rebuild ──────────────────────────
+
+    def rebuild_ios(self):
+        print("正在重新打包IPA。")
+
+        if self.final_apk.exists():
+            self.final_apk.unlink()
+
+        with zipfile.ZipFile(
+            self.final_apk,
+            "w",
+            zipfile.ZIP_DEFLATED
+        ) as zout:
+            for root, _, files in os.walk(self.main_output_path):
+                for file_name in files:
+                    file_path = Path(root) / file_name
+                    arcname = file_path.relative_to(
+                        self.main_output_path
+                    )
+                    zout.write(
+                        file_path,
+                        arcname
+                    )
+
+        print(f"IPA打包完成: {self.final_apk}")
+
+    def rebuild(self):
+        if self.is_ios:
+            return self.rebuild_ios()
+        return self.rebuild_android()
+
+    # ─────────────────────────── Cleanup ──────────────────────────
 
     def cleanup(self):
         for path in [
@@ -594,8 +781,86 @@ class ApkUpdater:
             if path.exists():
                 shutil.rmtree(path)
 
-        if self.apk_path.exists():
-            self.apk_path.unlink()
+        for path in [
+            self.apk_path,
+            self.raw_apk,
+            self.temp_align,
+        ]:
+            if path.exists():
+                path.unlink()
+
+    # ─────────────────────────── Upload ──────────────────────────
+
+    def upload(self, version):
+        print("正在连接服务器……")
+
+        ssh_server = SSHServer(
+            host=os.environ["SERVER_HOST"],
+            username="root",
+            password=os.environ["SERVER_PASSWORD"],
+            port=22
+        )
+
+        remote_directory = "/var/www/web_download"
+
+        print("正在检查服务器连接……")
+
+        if not ssh_server.test_connection():
+            raise RuntimeError("服务器连接失败")
+
+        print("服务器连接成功")
+        print("正在检查远程目录……")
+
+        if not ssh_server.is_dir(remote_directory):
+            print("web_download 文件夹不存在，正在创建……")
+            ssh_server.mkdir(
+                remote_directory,
+                parents=True
+            )
+            print("web_download 文件夹创建成功")
+        else:
+            print("web_download 文件夹已存在")
+
+        print(
+            "开始上传iOS客户端……"
+            if self.is_ios
+            else "开始上传Android客户端……"
+        )
+
+        remote_name = (
+            "蔚蓝档案.ipa"
+            if self.is_ios
+            else "蔚蓝档案.apk"
+        )
+
+        ssh_server.upload_file(
+            str(self.final_apk),
+            f"{remote_directory}/{remote_name}",
+            create_parent=False
+        )
+
+        print("上传完成")
+        print("正在更新Cloudflare KV……")
+
+        cf = CF(
+            account_id=os.environ["CF_ACCOUNT_ID"],
+            api_token=os.environ["CF_API_TOKEN"],
+            kv_namespace_id="1f56e1bf592a4ea18d18b2237cdf822d"
+        )
+
+        cf.kv.put(
+            "IPA_Resource" if self.is_ios else "APK_Resource",
+            {
+                "resourceVersion": version,
+                "resourceUpdateTime": datetime.now(
+                    ZoneInfo("Asia/Shanghai")
+                ).strftime("%Y-%m-%d %H:%M:%S")
+            }
+        )
+
+        print("KV更新成功")
+
+    # ─────────────────────────── 主流程 ──────────────────────────
 
     def run(
         self,
@@ -606,46 +871,42 @@ class ApkUpdater:
         modifygt4: str = "",
         replace: bool = True,
         modifybundle: bool = True,
+        upload: bool = False,
     ):
         try:
             version = self.download()
             self.prepare()
 
-            # 修改压缩规则
             self.modify_apktool_yml()
-
-            # apk合并并修改xml以支持reqable
             self.modify_manifest(trustcert)
 
             if trustcert:
                 self.install_trust_cert()
 
-            # 修改res文件
-            self.modify_resources(
-                modifylogin,
-                modifygt4
-            )
+            if modifylogin:
+                self.modify_login()
 
-            # 替换直接替换的资源文件
+            if modifygt4:
+                self.modify_gt4(modifygt4)
+
             if replace:
                 self.replace_resources()
 
-            # 修改sdk
             if sdkurl:
                 self.modify_sdk_url(sdkurl)
 
-            # 修改GameMainConfig（同时同步建立全量资源索引，供 bundle 修改复用）
             if gamemainconfig:
                 self.modify_game_main_config(gamemainconfig)
 
-            # 修改bundle资源（复用已建立的索引缓存，避免二次扫描）
             if modifybundle:
                 self.apply_bundle()
 
-            # 构建、对齐、签名
             self.rebuild()
 
-            print(f"APK更新完成: {self.final_apk}")
+            if upload:
+                self.upload(version)
+
+            print(f"客户端更新完成: {self.final_apk}")
         finally:
             self.cleanup()
 
@@ -653,16 +914,21 @@ class ApkUpdater:
 # ─────────────────────────── 参数 ──────────────────────────
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Update Blue Archive APK")
-    parser.add_argument("--server", type=str, default="JP", help="服务器选择")
+    parser = argparse.ArgumentParser(description="Update Blue Archive Client")
+    parser.add_argument(
+        "server",
+        choices=["JP", "JPPC", "JPiOS", "GL", "GLiOS"],
+        help="选择服务器区域"
+    )
     parser.add_argument("--sdkurl", type=str, default="", help="修改SDK_Url")
     parser.add_argument("--gamemainconfig", type=str, default="", help="修改GameMainConfig")
-    parser.add_argument("--modifylogin", action="store_true", help="修改登录界面语言")
+    parser.add_argument("--modifylogin", action="store_true", help="修改Android登录界面语言")
     parser.add_argument("--modifygt4", type=str, default="zho", help="修改登录界面语言")
     parser.add_argument("--replace", action="store_true", help="替换资源")
     parser.add_argument("--modifybundle", action="store_true", help="修改bundle资源")
     parser.add_argument("--repo", type=str, default="BA-APKSRC", help="资源文件夹路径")
     parser.add_argument("--trustcert", action="store_true", help="启用信任证书")
+    parser.add_argument("--upload", action="store_true", help="上传客户端到服务器")
     parser.add_argument("--workers", type=int, default=4, help="bundle修改并行进程数")
     return parser.parse_args()
 
@@ -684,4 +950,5 @@ if __name__ == "__main__":
         modifygt4=args.modifygt4,
         replace=args.replace,
         modifybundle=args.modifybundle,
+        upload=args.upload,
     )

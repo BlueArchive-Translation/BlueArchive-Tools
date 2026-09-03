@@ -1,4 +1,4 @@
-name: Update
+name: 更新
 
 on:
   workflow_dispatch:
@@ -27,44 +27,44 @@ jobs:
       PYTHONUNBUFFERED: "1"
 
     steps:
-      - name: Checkout Code
+      - name: 检出代码
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Setup .NET
+      - name: 设置 .NET
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0'
 
-      - name: Setup Python
+      - name: 设置 Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.12'
 
-      - name: Set up Node.js
+      - name: 设置 Node.js
         if: matrix.server == 'JPPC'
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: Install asar tool
+      - name: 安装 asar 工具
         if: matrix.server == 'JPPC'
         run: npm install -g @electron/asar
 
-      - name: Install SSH Key
+      - name: 安装 SSH 密钥
         uses: shimataro/ssh-key-action@v2
         with:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           known_hosts: unnecessary
           if_key_exists: replace
 
-      - name: Login
+      - name: 配置 Git 登录信息
         run: |
           git config --global user.email "actions@github.com"
           git config --global user.name "GitHub Actions"
 
-      - name: Install requirements
+      - name: 安装依赖
         run: |
           pip install -r requirements.txt
           sudo apt install -y android-sdk-build-tools
@@ -84,7 +84,7 @@ jobs:
           GH_TOKEN: ${{ secrets.UPDATE_TOKEN }}
         shell: bash
         run: |
-          echo "触发下一轮 Update..."
+          echo "正在触发下一轮更新..."
 
           curl -X POST \
             -H "Accept: application/vnd.github+json" \
@@ -93,9 +93,9 @@ jobs:
             https://api.github.com/repos/${{ github.repository }}/dispatches \
           -d '{"event_type": "restart"}'
 
-          echo "下一轮 Update 已触发。"
+          echo "下一轮更新已触发。"
 
-          echo "终止当前 Workflow..."
+          echo "正在终止当前工作流..."
 
           curl -X POST \
             -H "Accept: application/vnd.github+json" \
@@ -104,4 +104,3 @@ jobs:
             https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/cancel
 
           echo "取消请求已发送。"
-

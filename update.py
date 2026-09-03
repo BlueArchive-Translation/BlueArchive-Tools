@@ -8,7 +8,6 @@ from utils.regions import Server
 from utils.config import Config
 from utils.util import FileUtils, IL2CppDumper, ZipUtils
 from utils.cloudflare import CF
-from utils.server import SSHServer
 from utils.git import Git
 from build.build_apk import ApkUpdater
 from argparse import ArgumentParser
@@ -18,7 +17,7 @@ from zoneinfo import ZoneInfo
 def run_update(regions, server):
     env_file = Config.env_file.format(server=regions)
     load_dotenv(env_file, override=True)
-    
+
     local_version = os.getenv("GameVersion")
     cached_server_url = os.getenv("ServerInfoDataUrl")
     cached_platform_id = os.getenv("PlatformID")
@@ -26,7 +25,7 @@ def run_update(regions, server):
     local_latest_version = os.getenv("LatestVersion")
 
     apk_url, version = server.get_apk_url()
-    
+
     major = local_version != version
     major_pc = False
 
@@ -74,13 +73,10 @@ def run_update(regions, server):
         else:
             print(f"LatestVersion大版本一致 ({latest_ver})，尝试增量检查。")
 
-    if regions == "GL":
+    if regions == "GL" or major or major_pc:
         server_url, platform_id, channel_id = server.get_server_url(version)
     else:
-        if major or major_pc:
-            server_url, platform_id, channel_id = server.get_server_url(version)
-        else:
-            server_url, platform_id, channel_id = cached_server_url, cached_platform_id, cached_channel_id
+        server_url, platform_id, channel_id = cached_server_url, cached_platform_id, cached_channel_id
 
     # 获取 Addressable 等详细信息
     addressable_url, res_v, tab_v, med_v, pat_v = server.get_addressable_catalog_url(
@@ -104,7 +100,7 @@ def run_update(regions, server):
             f"MediaVersion={med_v}\n",
             f"PatchVersion={pat_v}\n"
         ])
-    
+
     # 追加 JPPC 特有字段
     if regions == "JPPC":
         new_env_content.extend([
@@ -142,8 +138,8 @@ def run_update(regions, server):
     else:
         print(f"{env_file} 配置无更新。")
 
-    # 后续 Dumper 逻辑（非 JPPC 且是大版本时运行）
-    if major and regions != "JPPC":
+    # 后续 Dumper 逻辑（JP/GL/CN且是大版本时运行）
+    if major and regions in ("JP", "GL", "CN"):
         # 直接metadata扫，不再使用il2cpp了
         dumper = IL2CppDumper(install_dir="tools")
 
@@ -164,7 +160,7 @@ def main():
     parser = ArgumentParser(description="BA资源自动更新")
     parser.add_argument(
         "server",
-        choices=["JP", "JPPC", "GL", "CN"],
+        choices=["JP", "JPPC", "JPiOS", "GL", "CN"],
         help="选择服务器区域"
     )
     args = parser.parse_args()
@@ -190,7 +186,7 @@ def main():
                 git.push()
 
                 if major:
-                    if args.server != "JPPC":
+                    if args.server in ("JP", "GL", "CN"):
                         version_name = server.get_version_name()
                         print(f"当前FlatData版本名称: {version_name}")
 
@@ -252,7 +248,7 @@ def main():
                         else:
                             print("没有检测到FlatData变动，跳过提交。")
 
-                if args.server != "JPPC":
+                if args.server in ("JP", "GL", "CN"):
                     types = ["Table"]
                     if args.server in ("GL", "CN"):
                         types.append("Voice")
@@ -273,7 +269,7 @@ def main():
 
                 # 调换先后顺序，build占用导致请求发送慢了
                 if major:
-                    if args.server != "JPPC":
+                    if args.server in ("JP", "GL", "CN"):
                         if args.server == "JP":
                             print("大版本更新且为 JP，密钥已变动，触发 JP APK 部署。")
 
@@ -315,87 +311,9 @@ def main():
                                 modifygt4="zho",
                                 replace=True,
                                 modifybundle=True,
+                                upload=True,
                             )
-
-                            ssh_server = SSHServer(
-                                host=os.environ["SERVER_HOST"],
-                                username="root",
-                                password=os.environ["SERVER_PASSWORD"],
-                                port=22
-                            )
-
-                            remote_directory = "/var/www/web_download"
-
-                            print("正在检查服务器连接...")
-
-                            if not ssh_server.test_connection():
-                                raise RuntimeError("服务器连接失败")
-
-                            print("服务器连接成功")
-
-                            print("正在检查远程目录...")
-
-                            if not ssh_server.is_dir(remote_directory):
-                                print("web_download 文件夹不存在，正在创建...")
-
-                                ssh_server.mkdir(
-                                    remote_directory,
-                                    parents=True
-                                )
-
-                                print("web_download 文件夹创建成功")
-                            else:
-                                print("web_download 文件夹已存在")
-
-                            print("开始上传Android客户端...")
-
-                            ssh_server.upload_file(
-                                "蔚蓝档案.apk",
-                                "/var/www/web_download/蔚蓝档案.apk",
-                                create_parent=False
-                            )
-
-                            print("上传完成")
-
-                            cf = CF(
-                                account_id=os.environ["CF_ACCOUNT_ID"],
-                                api_token=os.environ["CF_API_TOKEN"],
-                                kv_namespace_id="1f56e1bf592a4ea18d18b2237cdf822d"
-                            )
-
-                            cf.kv.put(
-                                "APK_Resource",
-                                {
-                                    "resourceVersion": version,
-                                    "resourceUpdateTime": datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S")
-                                }
-                            )
-
-                            print("KV更新成功")
-
-                            # BuildAPK GitHub Actions 调用
-                            # git.dispatch(
-                            #     "BuildAPK",
-                            #     {
-                            #         "server": "JP",
-                            #         "sdkurl": "https://jp-sdk-api.bluearchive.help/",
-                            #         "gamemainconfig": json.dumps(
-                            #             {
-                            #                 "ServerInfoDataUrl": modified_url
-                            #             },
-                            #             separators=(",", ":")
-                            #         ),
-                            #         "modifylogin": True,
-                            #         "modifygt4": "zho",
-                            #         "replace": True,
-                            #         "modifybundle": True,
-                            #         "repo_url": "https://github.com/BlueArchive-Translation/BA-APKSRC.git",
-                            #         "repo": "BA-APKSRC",
-                            #         "trustcert": True,
-                            #         "upload": True
-                            #     }
-                            # )
-                    else:
+                    elif args.server == "JPPC":
                         pc_src_dir = "BA-PC-SRC"
                         pc_src_git = Git(pc_src_dir)
 
@@ -411,7 +329,7 @@ def main():
                             pc_src_git.set_remote_url("origin", pc_src)
 
                         pc_src_git.add(".")
-                    
+
                         if pc_src_git.has_staged_changes():
                             pc_src_git.commit("提交BA-PC-SRC")
                             pc_src_git.push("main", set_upstream=True)

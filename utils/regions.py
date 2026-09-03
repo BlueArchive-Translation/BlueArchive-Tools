@@ -15,7 +15,7 @@ class Server:
         self.server = server
 
     def main(self, apk_url, version):
-        if self.server != "JPPC":
+        if self.server in ("JP", "GL", "CN"):
             downloader_name = f"BlueArchive_{self.server}_Downdloader.apk"
             Temp_name = f"Temp_{self.server}_Downloader"
             if os.path.exists(downloader_name):
@@ -34,7 +34,7 @@ class Server:
                     ZipUtils.extract_zip(zip_path=apk, dest_dir="Temp")
                 shutil.rmtree(Temp_name)
             os.remove(downloader_name)
-        else:
+        elif self.server == "JPPC":
             exe_name = "BlueArchive.exe"
             temp_exe_dir = f"Temp_{self.server}"
             FileDownloader(url=apk_url, verbose=True).save_file(exe_name)
@@ -46,7 +46,7 @@ class Server:
             os.remove(exe_name)
 
     def get_apk_url(self):
-        if self.server != "JPPC":
+        if self.server in ("JP", "GL", "CN"):
             server_id = {
                 "JP": 124755,
                 "GL": 139059,
@@ -60,7 +60,7 @@ class Server:
             
             apk_url = downinfo.get("apkurl")
             version = downinfo.get("version")
-        else:
+        elif self.server == "JPPC":
             html = FileDownloader("https://bluearchive.jp/").get_response().text
             app_js = re.search(r'https://webusstatic\.yo-star\.com/bluearchive_jp_web/js/app\.[0-9a-f]+\.js', html).group(0)
             js_content = FileDownloader(app_js).get_response().text
@@ -68,6 +68,19 @@ class Server:
             match = re.search(r'(https://[^\s"\'()]+BlueArchive_JP_Gamelauncher-([0-9.]+)-setup\.exe)', js_content)
             apk_url = match.group(1)
             version = match.group(2)
+        elif self.server in ("JPiOS", "GLiOS"):
+            ios_info = {
+                "JPiOS": (1515877221, "jp"),
+                "GLiOS": (1571873795, "tw")
+            }
+            game_id, country = ios_info[self.server]
+
+            url = f"https://itunes.apple.com/lookup?id={game_id}&country={country}"
+            response = FileDownloader(url=url).get_response()
+            results = response.json().get("results", [])
+
+            apk_url = None # 暂时拿不到，没办法
+            version = results[0].get("version")
         return apk_url, version
 
     def get_game_main_config(self, files_path) -> str:
@@ -98,7 +111,7 @@ class Server:
         if url_objs:
             raw_script = url_objs[0].read().m_Script
             # GL服的没有进行研究，故此这里不写
-            if self.server == "JP" or self.server == "JPPC":
+            if self.server in ("JP", "JPPC", "JPiOS"):
                 ciphers = {
                     "ServerInfoDataUrl": "X04YXBFqd3ZpTg9cKmpvdmpOElwnamB2eE4cXDZqc3ZgTg==",
                     "DefaultConnectionGroup": "tSrfb7xhQRKEKtZvrmFjEp4q1G+0YUUSkirOb7NhTxKfKv1vqGFPEoQqym8=",
@@ -125,16 +138,14 @@ class Server:
         return config_data
 
     def get_server_url(self, version) -> str:
-        if self.server == "JP" or self.server == "JPPC":
+        if self.server in ("JP", "JPPC", "JPiOS"):
             config_data = self.get_game_main_config("Temp")
             server_url = config_data.get("ServerInfoDataUrl")
             
             # 如果从新 APK 中解析不到，尝试使用本地缓存的地址
             if not server_url:
-                cached = os.getenv("ServerInfoDataUrl")
-                if cached:
-                    notice(f"[WARN] 未从新版 APK 中解析到 ServerInfoDataUrl，尝试使用缓存: {cached}")
-                    server_url = cached
+                server_url = None
+                print("未获取到Serverinfo！")
             return server_url, None, None
 
         elif self.server == "GL":
