@@ -49,7 +49,7 @@ def run_update(regions, server):
             )
 
             print("KV更新成功")
-        server.main(apk_url, version)
+        server.main(apk_url)
     else:
         print(f"GameVersion大版本一致 ({version})，尝试增量检查。")
 
@@ -270,7 +270,7 @@ def main():
                 # 调换先后顺序，build占用导致请求发送慢了
                 if major:
                     if args.server in ("JP", "GL", "CN"):
-                        if args.server == "JP":
+                        if args.server in ("JP", "JPiOS"):
                             print("大版本更新且为 JP，密钥已变动，触发 JP APK 部署。")
 
                             env_file = Config.env_file.format(server=args.server)
