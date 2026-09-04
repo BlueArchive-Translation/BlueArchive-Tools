@@ -269,7 +269,7 @@ def main():
 
                 # 调换先后顺序，build占用导致请求发送慢了
                 if major:
-                    if args.server in ("JP", "GL", "CN"):
+                    if args.server in ("JP", "GL", "CN", "JPiOS"):
                         if args.server in ("JP", "JPiOS"):
                             print("大版本更新且为 JP，密钥已变动，触发 JP APK 部署。")
 
@@ -295,7 +295,7 @@ def main():
                             updater = ApkUpdater(
                                 repo=apk_src_dir,
                                 server=args.server,
-                                workers=4,
+                                workers=1,
                             )
 
                             updater.run(
