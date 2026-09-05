@@ -269,73 +269,80 @@ def main():
 
                 # 调换先后顺序，build占用导致请求发送慢了
                 if major:
-                    if args.server in ("JP", "GL", "CN", "JPiOS"):
-                        if args.server in ("JP", "JPiOS"):
-                            print("大版本更新且为 JP，密钥已变动，触发 JP APK 部署。")
+                    if args.server in ("JP", "JPiOS"):
+                        print("大版本更新且为 JP，密钥已变动，触发 JP APK 部署。")
 
-                            env_file = Config.env_file.format(server=args.server)
+                        env_file = Config.env_file.format(server=args.server)
 
-                            load_dotenv(env_file, override=True)
-                            server_info_url = os.getenv("ServerInfoDataUrl")
+                        load_dotenv(env_file, override=True)
+                        server_info_url = os.getenv("ServerInfoDataUrl")
 
-                            modified_url = server_info_url.replace(
-                                "bluearchiveyostar.com",
-                                "bluearchive.help"
-                            )
+                        modified_url = server_info_url.replace(
+                            "bluearchiveyostar.com",
+                            "bluearchive.help"
+                        )
 
-                            print(f"修改后ServerInfoDataUrl: {modified_url}")
+                        print(f"修改后ServerInfoDataUrl: {modified_url}")
 
-                            # 检查 BA-APKSRC 仓库是否存在
-                            apk_src_dir = "BA-APKSRC"
+                        # 检查 BA-APKSRC 仓库是否存在
+                        apk_src_dir = "BA-APKSRC"
 
-                            if not os.path.exists(apk_src_dir):
-                                print("未找到BA-APKSRC目录，开始克隆仓库。")
-                                git.clone(Config.apk_src, apk_src_dir)
+                        if not os.path.exists(apk_src_dir):
+                            print("未找到BA-APKSRC目录，开始克隆仓库。")
+                            git.clone(Config.apk_src, apk_src_dir)
 
-                            updater = ApkUpdater(
-                                repo=apk_src_dir,
-                                server=args.server,
-                                workers=1,
-                            )
+                        updater = ApkUpdater(
+                            repo=apk_src_dir,
+                            server=args.server,
+                            workers=1,
+                        )
 
-                            updater.run(
-                                sdkurl="https://jp-sdk-api.bluearchive.help/",
-                                gamemainconfig=json.dumps(
-                                    {
-                                        "ServerInfoDataUrl": modified_url
-                                    },
-                                    separators=(",", ":")
-                                ),
-                                trustcert=True,
-                                modifylogin=True,
-                                modifygt4="zho",
-                                replace=True,
-                                modifybundle=True,
-                                upload=True,
-                            )
+                        updater.run(
+                            sdkurl="https://jp-sdk-api.bluearchive.help/",
+                            gamemainconfig=json.dumps(
+                                {"ServerInfoDataUrl": modified_url},
+                                separators=(",", ":")
+                            ),
+                            trustcert=True,
+                            modifylogin=True,
+                            modifygt4="zho",
+                            replace=True,
+                            modifybundle=True,
+                            upload=True,
+                        )
+
                     elif args.server == "JPPC":
                         pc_src_dir = "BA-PC-SRC"
                         pc_src_git = Git(pc_src_dir)
 
                         pc_src_git.init()
-
-                        pc_src = Config.pc_src
-
-                        origin_url = pc_src_git.get_remote_url()
-
-                        if origin_url is None:
-                            pc_src_git.add_remote("origin", pc_src)
-                        elif origin_url != pc_src:
-                            pc_src_git.set_remote_url("origin", pc_src)
-
+                        pc_src_git.add_remote("origin", Config.pc_src)
+                        pc_src_git.fetch("main")
+                        pc_src_git.checkout("main")
                         pc_src_git.add(".")
 
                         if pc_src_git.has_staged_changes():
                             pc_src_git.commit("提交BA-PC-SRC")
-                            pc_src_git.push("main", set_upstream=True)
-                            print("BA-PC-SRC上传完成。")
+                            pc_src_git.push("main")
+                            print("BA-PC-SRC main分支上传完成。")
                         else:
                             print("BA-PC-SRC没有检测到变动，跳过提交。")
+
+                        pc_install_dir = "BA-PC-SRC-INSTALL"
+                        pc_install_git = Git(pc_install_dir)
+
+                        pc_install_git.init()
+                        pc_install_git.add_remote("origin", Config.pc_src)
+                        pc_install_git.fetch("install")
+                        pc_install_git.checkout("install")
+                        pc_install_git.add(".")
+
+                        if pc_install_git.has_staged_changes():
+                            pc_install_git.commit("提交BA-PC-SRC-INSTALL")
+                            pc_install_git.push("install")
+                            print("BA-PC-SRC install分支上传完成。")
+                        else:
+                            print("BA-PC-SRC-INSTALL没有检测到变动，跳过提交。")
 
                 print("Git提交完成，程序退出。")
                 break

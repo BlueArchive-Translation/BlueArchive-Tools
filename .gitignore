@@ -48,6 +48,7 @@ BundlePackingInfo*
 *.db
 *.zip
 *.apk
+*.exe
 
 # Secrets / local configuration
 .env

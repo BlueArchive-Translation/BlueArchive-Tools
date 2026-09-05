@@ -3,13 +3,14 @@ import shutil
 import base64
 import json
 import re
+import time
+import hashlib
 from dotenv import load_dotenv
 from utils.encryption import create_key, convert_string
 from utils.console import notice
 from utils.config import Config
 from utils.util import ZipUtils, FileUtils, AsarUtils, CommandUtils, FileDownloader
 from xtractor.bundle import BundleExtractor
-
 
 class Server:
     SERVERS = {
@@ -54,6 +55,7 @@ class Server:
         self.replace_path = self.config.get("replace_path")
 
     def main(self, apk_url):
+        """ 大版本更新提取包体并解压 """
         if self.server in ("JP", "GL", "CN"):
             downloader_name = f"BlueArchive_{self.server}_Downdloader.apk"
             Temp_name = f"Temp_{self.server}_Downloader"
@@ -72,21 +74,51 @@ class Server:
                     ZipUtils.extract_zip(zip_path=apk, dest_dir="Temp")
                 shutil.rmtree(Temp_name)
             os.remove(downloader_name)
+
         elif self.server == "JPPC":
             exe_name = "BlueArchive.exe"
             temp_exe_dir = f"Temp_{self.server}"
+            temp_app_dir = f"Temp_{self.server}_App"
+
             FileDownloader(url=apk_url, verbose=True).save_file(exe_name)
+
             CommandUtils.run_command("7z", "x", exe_name, f"-o{temp_exe_dir}", "-y")
-            asar_path = os.path.abspath(os.path.join(temp_exe_dir, "$PLUGINSDIR", "resources", "app.asar"))
+
+            original_asar_path = os.path.abspath(
+                os.path.join(temp_exe_dir, "$PLUGINSDIR", "resources", "app.asar")
+            )
+
+            app_7z_path = os.path.abspath(
+                os.path.join(temp_exe_dir, "$PLUGINSDIR", "app-32.7z")
+            )
+            CommandUtils.run_command("7z", "x", app_7z_path, f"-o{temp_app_dir}", "-y")
+
+            modified_asar_path = os.path.abspath(
+                os.path.join(temp_app_dir, "resources", "app.asar")
+            )
+
             os.makedirs("BA-PC-SRC", exist_ok=True)
-            AsarUtils.extract_asar(asar_path=asar_path, dest_dir="BA-PC-SRC")
+            os.makedirs("BA-PC-SRC-INSTALL", exist_ok=True)
+
+            AsarUtils.extract_asar(
+                asar_path=modified_asar_path,
+                dest_dir="BA-PC-SRC"
+            )
+            AsarUtils.extract_asar(
+                asar_path=original_asar_path,
+                dest_dir="BA-PC-SRC-INSTALL"
+            )
+
             shutil.rmtree(temp_exe_dir)
+            shutil.rmtree(temp_app_dir)
             os.remove(exe_name)
+
         elif self.server == "JPiOS":
             FileDownloader(url=apk_url, verbose=True).save_file("BlueArchive.ipa")
             ZipUtils.extract_zip(zip_path="BlueArchive.ipa", dest_dir="Temp")
 
     def get_apk_url(self):
+        """ 获取apk链接并返回url和版本 """
         if self.server in ("JP", "GL", "CN"):
             server_id = {
                 "JP": 124755,
@@ -120,6 +152,7 @@ class Server:
         return apk_url, version
 
     def get_game_main_config(self, files_path) -> str:
+        """ 获取GameMainConfig并返回json """
         extractor = BundleExtractor(install_dir="tools", EXTRACT_DIR="Extracted")
         config_data = {}
         if self.server == "GL":
@@ -165,6 +198,7 @@ class Server:
         return config_data
 
     def get_server_url(self, version) -> str:
+        """ 获取serverinfo """
         if self.server in ("JP", "JPPC", "JPiOS"):
             config_data = self.get_game_main_config("Temp")
             server_url = config_data.get("ServerInfoDataUrl")
@@ -232,16 +266,22 @@ class Server:
             patch_version = data.get("PatchVersion")
             return latest_catalog_url, resource_version, table_version, media_version, patch_version
 
+    def get_auth_header(self, data: str = "", version: str = "") -> str:
+        head = {
+            "game_tag": "BlueArchive_JP",
+            "time": int(time.time()),
+            "version": version,
+        }
+        sign_str = f"{json.dumps(head, separators=(',', ':'), ensure_ascii=False)}{data or ''}DE7108E9B2842FD460F4777702727869"
+        sign = hashlib.md5(sign_str.encode("utf-8")).hexdigest()
+        return json.dumps({
+            "head": head,
+            "sign": sign,
+        }, separators=(",", ":"), ensure_ascii=False)
+
     def get_game_launcher_config(self, version):
         api_headers = {
-            "Authorization": json.dumps({
-                "head": {
-                    "game_tag": "BlueArchive_JP",
-                    "time": 1768991129,
-                    "version": version
-                },
-                "sign": "9ea3c5927d09f0e4073ed15ec532bc7e"
-            })
+            "Authorization": self.get_auth_header(version=version)
         }
         url = "https://api-launcher-jp.yo-star.com/api/launcher/game/config"
         response = FileDownloader(url=url, headers=api_headers).get_response()
@@ -257,14 +297,7 @@ class Server:
 
     def get_zip_config_url(self, version, latest_version, file_path):
         api_headers = {
-            "Authorization": json.dumps({
-                "head": {
-                    "game_tag": "BlueArchive_JP",
-                    "time": 1768991129,
-                    "version": version
-                },
-                "sign": "9ea3c5927d09f0e4073ed15ec532bc7e"
-            })
+            "Authorization": self.get_auth_header(version=version)
         }
         params = {
             "version": latest_version,

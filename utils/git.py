@@ -45,7 +45,16 @@ class Git:
         self.run("fetch", "origin", branch)
 
     def checkout(self, branch: str):
-        self.run("checkout", branch)
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", branch],
+            cwd=self.cwd,
+            capture_output=True
+        )
+
+        if result.returncode == 0:
+            self.run("checkout", branch)
+        else:
+            self.run("checkout", "-b", branch, f"origin/{branch}")
 
     def add(self, path: str = "."):
         self.run("add", path)
