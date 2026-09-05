@@ -9,7 +9,7 @@ from utils.config import Config
 from utils.util import FileUtils, IL2CppDumper, ZipUtils
 from utils.cloudflare import CF
 from utils.git import Git
-from build.build_apk import ApkUpdater
+from build.build_update import BuildUpdater
 from argparse import ArgumentParser
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -47,7 +47,14 @@ def run_update(regions, server):
                     "officialUpdateTime": datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S")
                 }
             )
-
+        if regions == "JPiOS":
+            cf.kv.put(
+                "IPA_Official",
+                {
+                    "officialVersion": version,
+                    "officialUpdateTime": datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S")
+                }
+            )
             print("KV更新成功")
         server.main(apk_url)
     else:
@@ -126,7 +133,7 @@ def run_update(regions, server):
         print(f"{env_file} 配置同步完成。")
 
         if regions == "JP":
-            for table_name in ["Table_Official", "Voice_Official", "Media_Official"]:
+            for table_name in ["Table_Official", "CNVoice_Official", "KRVoice_Official", "Media_Official"]:
                 cf.kv.put(
                     table_name,
                     {
@@ -160,7 +167,7 @@ def main():
     parser = ArgumentParser(description="BA资源自动更新")
     parser.add_argument(
         "server",
-        choices=["JP", "JPPC", "JPiOS", "GL", "CN"],
+        choices=["JP", "JPPC", "JPiOS", "GL", "GLiOS", "CN"],
         help="选择服务器区域"
     )
     args = parser.parse_args()
@@ -185,73 +192,74 @@ def main():
                 git.commit(f"{args.server}服务器变动，提交配置。")
                 git.push()
 
-                if major:
-                    if args.server in ("JP", "GL", "CN"):
-                        version_name = server.get_version_name()
-                        print(f"当前FlatData版本名称: {version_name}")
+                if major and args.server in ("JP", "GL", "CN"):
+                    version_name = server.get_version_name()
+                    print(f"当前FlatData版本名称: {version_name}")
 
-                        zip_path = f"{version_name}.zip"
-                        ZipUtils.create_zip(
-                            ["Dumps", "FlatData"],
-                            zip_path,
-                            progress_bar=True
-                        )
-                        print(f"FlatData打包完成: {zip_path}")
+                    zip_path = f"{version_name}.zip"
+                    ZipUtils.create_zip(
+                        ["Dumps", "FlatData"],
+                        zip_path,
+                        progress_bar=True
+                    )
+                    print(f"FlatData打包完成: {zip_path}")
 
-                        flatdata_dir = "BA-FlatData"
+                    flatdata_dir = "BA-FlatData"
 
-                        if not os.path.exists(flatdata_dir):
-                            print("未找到BA-FlatData目录，开始克隆仓库。")
-                            git.clone(Config.FlatData, flatdata_dir)
+                    if not os.path.exists(flatdata_dir):
+                        print("未找到BA-FlatData目录，开始克隆仓库。")
+                        git.clone(Config.FlatData, flatdata_dir)
 
-                        flatdata_git = Git(flatdata_dir)
+                    flatdata_git = Git(flatdata_dir)
 
-                        # 上传版本ZIP到main
-                        flatdata_git.checkout("main")
-                        flatdata_git.pull("main")
+                    # 上传版本ZIP到main
+                    flatdata_git.checkout("main")
+                    flatdata_git.pull("main")
 
-                        shutil.move(
-                            zip_path,
-                            os.path.join(flatdata_dir, zip_path)
-                        )
+                    shutil.move(
+                        zip_path,
+                        os.path.join(flatdata_dir, zip_path)
+                    )
 
-                        flatdata_git.add(zip_path)
-                        flatdata_git.commit(f"上传{version_name}.zip")
-                        flatdata_git.push("main")
+                    flatdata_git.add(zip_path)
+                    flatdata_git.commit(f"上传{version_name}.zip")
+                    flatdata_git.push("main")
 
-                        print(f"ZIP上传完成: {zip_path}")
+                    print(f"ZIP上传完成: {zip_path}")
 
-                        # 上传FlatData到服务器分支
-                        flatdata_git.fetch(args.server)
-                        flatdata_git.checkout(args.server)
-                        flatdata_git.pull(args.server)
+                    # 上传FlatData到服务器分支
+                    flatdata_git.fetch(args.server)
+                    flatdata_git.checkout(args.server)
+                    flatdata_git.pull(args.server)
 
-                        flatdata_source = os.path.abspath("FlatData")
+                    flatdata_source = os.path.abspath("FlatData")
 
-                        for item in os.listdir(flatdata_source):
-                            src = os.path.join(flatdata_source, item)
-                            dst = os.path.join(flatdata_dir, item)
+                    for item in os.listdir(flatdata_source):
+                        src = os.path.join(flatdata_source, item)
+                        dst = os.path.join(flatdata_dir, item)
 
-                            if os.path.isdir(src):
-                                shutil.copytree(src, dst, dirs_exist_ok=True)
-                            else:
-                                shutil.copy2(src, dst)
-
-                        flatdata_git.add(".")
-
-                        if flatdata_git.has_changes():
-                            flatdata_git.commit(
-                                f"提交FlatData，版本{version_name}"
-                            )
-                            flatdata_git.push(args.server)
-                            print(f"{args.server}分支FlatData上传完成。")
+                        if os.path.isdir(src):
+                            shutil.copytree(src, dst, dirs_exist_ok=True)
                         else:
-                            print("没有检测到FlatData变动，跳过提交。")
+                            shutil.copy2(src, dst)
+
+                    flatdata_git.add(".")
+
+                    if flatdata_git.has_changes():
+                        flatdata_git.commit(
+                            f"提交FlatData，版本{version_name}"
+                        )
+                        flatdata_git.push(args.server)
+                        print(f"{args.server}分支FlatData上传完成。")
+                    else:
+                        print("没有检测到FlatData变动，跳过提交。")
 
                 if args.server in ("JP", "GL", "CN"):
                     types = ["Table"]
+
                     if args.server in ("GL", "CN"):
                         types.append("Voice")
+
                     if args.server == "JP":
                         types.append("RepackTable")
 
@@ -268,81 +276,78 @@ def main():
                         git.dispatch(event_type, payload)
 
                 # 调换先后顺序，build占用导致请求发送慢了
-                if major:
-                    if args.server in ("JP", "JPiOS"):
-                        print("大版本更新且为 JP，密钥已变动，触发 JP APK 部署。")
+                if major and args.server == "JPPC":
+                    pc_src_dir = "BA-PC-SRC"
+                    pc_src_git = Git(pc_src_dir)
 
-                        env_file = Config.env_file.format(server=args.server)
+                    pc_src_git.init()
+                    pc_src_git.add_remote("origin", Config.pc_src)
+                    pc_src_git.fetch("main")
+                    pc_src_git.checkout("main")
+                    pc_src_git.add(".")
 
-                        load_dotenv(env_file, override=True)
-                        server_info_url = os.getenv("ServerInfoDataUrl")
+                    if pc_src_git.has_staged_changes():
+                        pc_src_git.commit("提交BA-PC-SRC")
+                        pc_src_git.push("main")
+                        print("BA-PC-SRC main分支上传完成。")
+                    else:
+                        print("BA-PC-SRC没有检测到变动，跳过提交。")
 
-                        modified_url = server_info_url.replace(
-                            "bluearchiveyostar.com",
-                            "bluearchive.help"
-                        )
+                    pc_install_dir = "BA-PC-SRC-INSTALL"
+                    pc_install_git = Git(pc_install_dir)
 
-                        print(f"修改后ServerInfoDataUrl: {modified_url}")
+                    pc_install_git.init()
+                    pc_install_git.add_remote("origin", Config.pc_src)
+                    pc_install_git.fetch("install")
+                    pc_install_git.checkout("install")
+                    pc_install_git.add(".")
 
-                        # 检查 BA-APKSRC 仓库是否存在
-                        apk_src_dir = "BA-APKSRC"
+                    if pc_install_git.has_staged_changes():
+                        pc_install_git.commit("提交BA-PC-SRC-INSTALL")
+                        pc_install_git.push("install")
+                        print("BA-PC-SRC install分支上传完成。")
+                    else:
+                        print("BA-PC-SRC-INSTALL没有检测到变动，跳过提交。")
 
-                        if not os.path.exists(apk_src_dir):
-                            print("未找到BA-APKSRC目录，开始克隆仓库。")
-                            git.clone(Config.apk_src, apk_src_dir)
+                if (major or major_pc) and args.server in ("JP", "JPiOS", "JPPC"):
+                    env_file = Config.env_file.format(server=args.server)
 
-                        updater = ApkUpdater(
-                            repo=apk_src_dir,
-                            server=args.server,
-                            workers=1,
-                        )
+                    load_dotenv(env_file, override=True)
+                    server_info_url = os.getenv("ServerInfoDataUrl")
 
-                        updater.run(
-                            sdkurl="https://jp-sdk-api.bluearchive.help/",
-                            gamemainconfig=json.dumps(
-                                {"ServerInfoDataUrl": modified_url},
-                                separators=(",", ":")
-                            ),
-                            trustcert=True,
-                            modifylogin=True,
-                            modifygt4="zho",
-                            replace=True,
-                            modifybundle=True,
-                            upload=True,
-                        )
+                    modified_url = server_info_url.replace(
+                        "bluearchiveyostar.com",
+                        "bluearchive.help"
+                    )
 
-                    elif args.server == "JPPC":
-                        pc_src_dir = "BA-PC-SRC"
-                        pc_src_git = Git(pc_src_dir)
+                    print(f"修改后ServerInfoDataUrl: {modified_url}")
 
-                        pc_src_git.init()
-                        pc_src_git.add_remote("origin", Config.pc_src)
-                        pc_src_git.fetch("main")
-                        pc_src_git.checkout("main")
-                        pc_src_git.add(".")
+                    # 检查 BA-APKSRC 仓库是否存在
+                    apk_src_dir = "BA-APKSRC"
 
-                        if pc_src_git.has_staged_changes():
-                            pc_src_git.commit("提交BA-PC-SRC")
-                            pc_src_git.push("main")
-                            print("BA-PC-SRC main分支上传完成。")
-                        else:
-                            print("BA-PC-SRC没有检测到变动，跳过提交。")
+                    if not os.path.exists(apk_src_dir):
+                        print("未找到BA-APKSRC目录，开始克隆仓库。")
+                        git.clone(Config.apk_src, apk_src_dir)
 
-                        pc_install_dir = "BA-PC-SRC-INSTALL"
-                        pc_install_git = Git(pc_install_dir)
+                    updater = BuildUpdater(
+                        repo=apk_src_dir,
+                        server=args.server,
+                        workers=1,
+                    )
 
-                        pc_install_git.init()
-                        pc_install_git.add_remote("origin", Config.pc_src)
-                        pc_install_git.fetch("install")
-                        pc_install_git.checkout("install")
-                        pc_install_git.add(".")
-
-                        if pc_install_git.has_staged_changes():
-                            pc_install_git.commit("提交BA-PC-SRC-INSTALL")
-                            pc_install_git.push("install")
-                            print("BA-PC-SRC install分支上传完成。")
-                        else:
-                            print("BA-PC-SRC-INSTALL没有检测到变动，跳过提交。")
+                    updater.run(
+                        sdkurl="https://jp-sdk-api.bluearchive.help/",
+                        gamemainconfig=json.dumps(
+                            {"ServerInfoDataUrl": modified_url},
+                            separators=(",", ":")
+                        ),
+                        trustcert=True,
+                        modifylogin=True,
+                        modifygt4="zho",
+                        replace=True,
+                        modifybundle=True,
+                        upload=True,
+                    )
 
                 print("Git提交完成，程序退出。")
                 break

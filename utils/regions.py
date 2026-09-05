@@ -131,6 +131,7 @@ class Server:
             downinfo = response.json().get("result", {}).get("data", {}).get("downinfo", {})
             apk_url = downinfo.get("apkurl")
             version = downinfo.get("version")
+
         elif self.server == "JPPC":
             html = FileDownloader("https://bluearchive.jp/").get_response().text
             app_js = re.search(r'https://webusstatic\.yo-star\.com/bluearchive_jp_web/js/app\.[0-9a-f]+\.js', html).group(0)
@@ -138,6 +139,7 @@ class Server:
             match = re.search(r'(https://[^\s"\'()]+BlueArchive_JP_Gamelauncher-([0-9.]+)-setup\.exe)', js_content)
             apk_url = match.group(1)
             version = match.group(2)
+
         elif self.server in ("JPiOS", "GLiOS"):
             ios_info = {
                 "JPiOS": (1515877221, "jp"),
@@ -149,6 +151,7 @@ class Server:
             results = response.json().get("results", [])
             apk_url = None
             version = results[0].get("version")
+
         return apk_url, version
 
     def get_game_main_config(self, files_path) -> str:

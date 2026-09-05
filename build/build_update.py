@@ -76,7 +76,7 @@ class ClientConfig:
 
 # ─────────────────────────── 客户端更新器 ──────────────────────────
 
-class ApkUpdater:
+class BuildUpdater:
     def __init__(
         self,
         repo: str | Path = "BA-APKSRC",
@@ -929,14 +929,14 @@ def parse_args():
     parser.add_argument("--repo", type=str, default="BA-APKSRC", help="资源文件夹路径")
     parser.add_argument("--trustcert", action="store_true", help="启用信任证书")
     parser.add_argument("--upload", action="store_true", help="上传客户端到服务器")
-    parser.add_argument("--workers", type=int, default=4, help="bundle修改并行进程数")
+    parser.add_argument("--workers", type=int, default=1, help="bundle修改并行进程数")
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
 
-    updater = ApkUpdater(
+    updater = BuildUpdater(
         repo=args.repo,
         server=args.server,
         workers=args.workers,
