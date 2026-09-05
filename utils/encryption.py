@@ -7,6 +7,7 @@ from base64 import b64decode, b64encode
 from binascii import crc32
 from struct import Struct
 from typing import TypeVar
+from pathlib import Path
 
 from Crypto.Util.strxor import strxor
 from xxhash import xxh32_intdigest, xxh64_intdigest
@@ -21,6 +22,33 @@ LONG = Struct("<q")
 ULONG = Struct("<Q")
 FLOAT = Struct("<f")
 DOUBLE = Struct("<d")
+
+CRC64_POLY = 0xC96C5795D7870F42
+MASK64 = 0xFFFFFFFFFFFFFFFF
+
+def _init_crc64_table():
+    table = []
+    for n in range(256):
+        crc = n
+        for _ in range(8):
+            crc = CRC64_POLY ^ (crc >> 1) if crc & 1 else crc >> 1
+        table.append(crc & MASK64)
+    return table
+
+CRC64_TABLE = _init_crc64_table()
+
+def crc64(data, crc=0):
+    crc = (~crc) & MASK64
+    for byte in data:
+        crc = CRC64_TABLE[(crc ^ byte) & 0xFF] ^ (crc >> 8)
+    return (~crc) & MASK64
+
+def crc64_file(file_path, chunk_size=1024 * 1024):
+    crc = 0
+    with open(file_path, "rb") as f:
+        while data := f.read(chunk_size):
+            crc = crc64(data, crc)
+    return str(crc)
 
 def calculate_hash(name: bytes | str) -> int:
     """Calculate a 32-bit hash using xxhash with UTF-8 encoding if needed."""

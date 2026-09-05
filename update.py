@@ -63,6 +63,7 @@ def run_update(regions, server):
     if regions == "JPPC":
         latest_ver, file_path, res_ver = server.get_game_launcher_config(version)
         zip_url = server.get_zip_config_url(version, latest_ver, file_path)
+        zip_c = zip_url.split('/', 3)[-1]
         major_pc = local_latest_version != latest_ver
         # LatestVersion大版本更新
         if major_pc:
@@ -114,6 +115,7 @@ def run_update(regions, server):
             f"LatestVersion={latest_ver}\n",
             f"FilePath={file_path}\n",
             f"ResourceVersion={res_ver}\n",
+            f"ZipConfig={zip_c}\n",
             f"ZipConfigUrl={zip_url}\n"
         ])
 

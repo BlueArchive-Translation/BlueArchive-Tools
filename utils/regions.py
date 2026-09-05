@@ -319,7 +319,7 @@ class Server:
 
     def download_launcher_assets(self, res_version, zip_config_url, targets, dest_dir):
         os.makedirs(dest_dir, exist_ok=True)
-        local_json_name = zip_config_url.split("/")[-1]
+        local_json_name = zip_config_url.split('/', 3)[-1]
         downloader = FileDownloader(url=zip_config_url)
 
         if downloader.save_file(local_json_name):

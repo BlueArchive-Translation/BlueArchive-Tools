@@ -19,6 +19,8 @@ from utils.apksigner import ApkSigner
 from utils.regions import Server
 from utils.cloudflare import CF
 from utils.server import SSHServer
+from utils.config import Config
+from dotenv import load_dotenv
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from xtractor.bundle import (
@@ -26,7 +28,13 @@ from xtractor.bundle import (
     build_asset_index,
     _bundle_replace_worker,
 )
-from utils.encryption import create_key, convert_string, encrypt_string, xor
+from utils.encryption import (
+    create_key,
+    convert_string,
+    encrypt_string,
+    xor,
+    crc64_file,
+)
 
 
 # ─────────────────────────── 客户端配置 ──────────────────────────
@@ -49,22 +57,15 @@ class ClientConfig:
             "sdk_config_path": "Payload/BlueArchive.app/SDKConfigSettings.json",
             "modify_login": False,
         },
-
-        # 预留：Windows
         "JPPC": {
             "platform": "Windows",
         },
-
-        # 预留：Global
         "GL": {
             "platform": "Android",
         },
-
-        # 预留：Global iOS
         "GLiOS": {
             "platform": "iOS",
         },
-
     }
 
     @classmethod
@@ -313,6 +314,46 @@ class BuildUpdater:
         if not sdkurl:
             return
 
+        if self.is_windows:
+            print("正在修改Bundle中的SDKConfigSettings。")
+            data_folder = str(self.data_path)
+            url_objs = BundleExtractor().search_unity_pack(
+                data_folder,
+                data_type=["TextAsset"],
+                data_name=["SDKConfigSettings"],
+                condition_connect=True,
+                collect_index=self.asset_index,
+            )
+
+            if not url_objs:
+                print("未搜索到SDKConfigSettings！")
+                return
+
+            raw_script = url_objs[0].read().m_Script
+            if isinstance(raw_script, str):
+                raw_script = raw_script.encode("utf-8", "surrogateescape")
+
+            try:
+                sdk_config = json.loads(raw_script.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                raise RuntimeError(
+                    f"SDKConfigSettings解析失败: {e}"
+                ) from e
+
+            sdk_config["Regions"]["Jp"]["Sdk_Url"] = sdkurl
+
+            modified_dir = self.repo / "Modified"
+            modified_dir.mkdir(parents=True, exist_ok=True)
+            (modified_dir / "SDKConfigSettings").write_bytes(
+                json.dumps(
+                    sdk_config,
+                    separators=(",", ":"),
+                    ensure_ascii=False
+                ).encode("utf-8")
+            )
+            print("Bundle中的SDKConfigSettings修改完成。")
+            return
+
         print("正在修改SDKConfigSettings.json。")
         sdk_config_path = self.sdk_config_path
 
@@ -429,90 +470,71 @@ class BuildUpdater:
         (modified_dir / "GameMainConfig").write_bytes(new_raw_script)
         print("GameMainConfig修改完成。")
 
-    # ─────────────────────────── Bundle ──────────────────────────
+    # ─────────────────────────── Windows Prepare ──────────────────────────
 
-    def apply_bundle(self):
-        print("正在替换Bundle资源。")
-        modified_dir = self.repo / "Modified"
-        if not modified_dir.exists():
-            return
+    def prepare_windows(self):
+        print("正在下载Windows Launcher资源。")
 
-        extractor = BundleExtractor()
-        data_folder = str(self.data_path)
+        env_file = Config.env_file.format(server=self.server)
+        load_dotenv(env_file, override=True)
 
-        if not self.asset_index:
-            print(f"正在扫描bundle目录建立索引: {data_folder}")
-            self.asset_index = build_asset_index(
-                extractor,
-                data_folder
+        res_ver = os.getenv("ResourceVersion")
+        zip_url = os.getenv("ZipConfigUrl")
+
+        if not res_ver:
+            raise ValueError(
+                f"{env_file} 中未找到 ResourceVersion"
             )
 
-        print(f"索引资源名数量: {len(self.asset_index)}。")
+        if not zip_url:
+            raise ValueError(
+                f"{env_file} 中未找到 ZipConfigUrl"
+            )
 
-        tasks = []
-        for root, _, files in os.walk(modified_dir):
-            for file_name in files:
-                file_path = str(Path(root) / file_name)
-                asset_name = Path(root, file_name).stem
-                matches = [
-                    m for m in self.asset_index.get(asset_name, [])
-                    if m.get("source_path")
-                ]
+        print(f"ResourceVersion: {res_ver}")
+        print(f"ZipConfigUrl: {zip_url}")
 
-                if not matches:
-                    print(f"[跳过] 未在bundle中找到资源: {asset_name}")
-                    continue
+        launcher_dir = self.base_dir / "Launcher"
 
-                seen_files = set()
-                for match in matches:
-                    target = match["source_path"]
-                    if target and target not in seen_files:
-                        seen_files.add(target)
-                        tasks.append(
-                            (asset_name, target, match, file_path)
-                        )
-
-        if not tasks:
-            print("没有需要修改的bundle资源。")
-            return
-
-        print(
-            f"共 {len(tasks)} 个bundle修改任务，"
-            f"使用 {self.workers} 进程并行处理……"
+        Server(self.server).download_launcher_assets(
+            res_ver,
+            zip_url,
+            ["resources.assets", "resources.assets.resS"],
+            str(launcher_dir)
         )
 
-        bin_path = extractor.bin_path
-        work_items = [
-            (bin_path, target, match, asset_name, file_path, True)
-            for asset_name, target, match, file_path in tasks
-        ]
+        resources_path = launcher_dir / "resources.assets"
+        resources_res_path = launcher_dir / "resources.assets.resS"
 
-        with multiprocessing.Pool(processes=self.workers) as pool:
-            results = pool.map(_bundle_replace_worker, work_items)
+        if not resources_path.exists():
+            raise FileNotFoundError(
+                f"未找到resources.assets: {resources_path}"
+            )
 
-        success = sum(1 for _, ok in results if ok)
-        print(f"bundle文件修改完成，成功 {success}/{len(results)}。")
+        if not resources_res_path.exists():
+            raise FileNotFoundError(
+                f"未找到resources.assets.resS: {resources_res_path}"
+            )
 
-    # ─────────────────────────── 下载 ──────────────────────────
+        print("正在准备Windows资源。")
 
-    def download(self):
-        print(
-            "正在下载IPA。" if self.is_ios
-            else "正在下载APK。"
+        self.main_output_path.mkdir(
+            parents=True,
+            exist_ok=True
         )
 
-        self.base_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(
+            resources_path,
+            self.main_output_path / "resources.assets"
+        )
+        shutil.copy2(
+            resources_res_path,
+            self.main_output_path / "resources.assets.resS"
+        )
 
-        apk_url, version = Server(self.server).get_apk_url()
-        FileDownloader(
-            url=apk_url,
-            headers={"User-Agent": "Androidkb"}
-        ).save_file(str(self.apk_path))
+        print("Windows资源准备完成。")
 
-        print(f"版本: {version}")
-        return version
-
-    # ─────────────────────────── Android Prepare ──────────────────────────
+    # ─────────────────────────── Prepare ──────────────────────────
 
     def prepare_android(self):
         print("正在解压APK。")
@@ -588,8 +610,6 @@ class BuildUpdater:
         self.apk_path.unlink()
         print("prepare流程完成。")
 
-    # ─────────────────────────── iOS Prepare ──────────────────────────
-
     def prepare_ios(self):
         print("正在解压IPA。")
 
@@ -616,6 +636,8 @@ class BuildUpdater:
         print("IPA解包完成。")
 
     def prepare(self):
+        if self.is_windows:
+            return self.prepare_windows()
         if self.is_ios:
             return self.prepare_ios()
         return self.prepare_android()
@@ -644,6 +666,9 @@ class BuildUpdater:
     # ─────────────────────────── Replace ──────────────────────────
 
     def replace_resources(self):
+        if self.is_windows:
+            return
+
         replace_dir = self.repo / "Replace"
         if replace_dir.exists():
             print("正在替换资源……")
@@ -764,82 +789,234 @@ class BuildUpdater:
 
         print(f"IPA打包完成: {self.final_apk}")
 
+    # ─────────────────────────── Windows Rebuild ──────────────────────────
+
+    def rebuild_windows(self):
+        print("正在重新打包Windows资源。")
+
+        output_path = Path("蔚蓝档案-Windows")
+
+        if output_path.exists():
+            shutil.rmtree(output_path)
+
+        output_path.mkdir(
+            parents=True,
+            exist_ok=True
+        )
+
+        for file_name in [
+            "resources.assets",
+            "resources.assets.resS",
+        ]:
+            src = self.main_output_path / file_name
+            if not src.exists():
+                raise FileNotFoundError(
+                    f"未找到Windows资源: {src}"
+                )
+
+            shutil.copy2(
+                src,
+                output_path / file_name
+            )
+
+        print(f"Windows资源打包完成: {output_path}")
+
     def rebuild(self):
+        if self.is_windows:
+            return self.rebuild_windows()
         if self.is_ios:
             return self.rebuild_ios()
         return self.rebuild_android()
 
-    # ─────────────────────────── Cleanup ──────────────────────────
+    # ─────────────────────────── Windows Online Config ──────────────────────────
 
-    def cleanup(self):
-        for path in [
-            self.decoded_path,
-            self.temp_extract_path,
-            self.main_output_path,
-            self.dex_backup_path,
-        ]:
-            if path.exists():
-                shutil.rmtree(path)
+    def _get_windows_online_config(self):
+        config_dir = Path("zip_online_config_json")
+        if not config_dir.exists():
+            raise FileNotFoundError(
+                f"未找到在线配置目录: {config_dir}"
+            )
 
-        for path in [
-            self.apk_path,
-            self.raw_apk,
-            self.temp_align,
-        ]:
-            if path.exists():
-                path.unlink()
+        json_files = list(config_dir.glob("*.json"))
+        if not json_files:
+            raise FileNotFoundError(
+                f"未找到在线配置JSON: {config_dir}"
+            )
+
+        if len(json_files) > 1:
+            raise RuntimeError(
+                f"zip_online_config_json 中存在多个JSON文件: {json_files}"
+            )
+
+        return json_files[0]
+
+    def _update_online_file(self, file_list, online_path, local_path):
+        local_path = Path(local_path)
+
+        if not local_path.exists():
+            raise FileNotFoundError(
+                f"未找到资源文件: {local_path}"
+            )
+
+        file_hash = str(crc64_file(local_path))
+        file_size = str(local_path.stat().st_size)
+
+        for item in file_list:
+            if item.get("path") == online_path:
+                item["hash"] = file_hash
+                item["size"] = file_size
+                item["modified"] = True
+                print(
+                    f"  --> {online_path} "
+                    f"hash={file_hash} "
+                    f"size={file_size}"
+                )
+                return
+
+        file_list.append({
+            "path": online_path,
+            "hash": file_hash,
+            "size": file_size,
+            "modified": True,
+        })
+        print(
+            f"  --> 新增 {online_path} "
+            f"hash={file_hash} "
+            f"size={file_size}"
+        )
+
+    def _update_windows_resource_config(self, file_list):
+        print("正在修改Windows资源配置。")
+
+        resources = {
+            "/BlueArchive_Data/resources.assets":
+                self.main_output_path / "resources.assets",
+            "/BlueArchive_Data/resources.assets.resS":
+                self.main_output_path / "resources.assets.resS",
+        }
+
+        for online_path, local_path in resources.items():
+            self._update_online_file(
+                file_list,
+                online_path,
+                local_path
+            )
+
+    def _update_windows_replace_config(self, file_list):
+        replace_dir = self.repo / "Replace"
+
+        if not replace_dir.exists():
+            print("未找到Replace目录，跳过Windows额外资源。")
+            return
+
+        print("正在检查Windows Replace资源。")
+
+        for local_path in sorted(
+            path for path in replace_dir.rglob("*")
+            if path.is_file()
+        ):
+            relative_path = local_path.relative_to(
+                replace_dir
+            ).as_posix()
+
+            online_path = (
+                "/BlueArchive_Data/StreamingAssets/"
+                f"{relative_path}"
+            )
+
+            self._update_online_file(
+                file_list,
+                online_path,
+                local_path
+            )
+
+    def modify_windows_online_config(self):
+        json_path = self._get_windows_online_config()
+        print(f"正在修改Windows在线配置: {json_path}")
+
+        data = json.loads(
+            json_path.read_text(encoding="utf-8")
+        )
+
+        file_list = data.get("file")
+        if not isinstance(file_list, list):
+            raise ValueError(
+                "在线配置JSON中的file不是数组"
+            )
+
+        self._update_windows_resource_config(file_list)
+        self._update_windows_replace_config(file_list)
+
+        json_path.write_text(
+            json.dumps(
+                data,
+                ensure_ascii=False,
+                indent=4
+            ) + "\n",
+            encoding="utf-8"
+        )
+
+        print("Windows在线配置修改完成。")
+        return json_path
 
     # ─────────────────────────── Upload ──────────────────────────
 
-    def upload(self, version):
-        print("正在连接服务器……")
-
-        ssh_server = SSHServer(
+    def _create_ssh_server(self):
+        return SSHServer(
             host=os.environ["SERVER_HOST"],
             username="root",
             password=os.environ["SERVER_PASSWORD"],
             port=22
         )
 
-        remote_directory = "/var/www/web_download"
-
-        print("正在检查服务器连接……")
-
-        if not ssh_server.test_connection():
-            raise RuntimeError("服务器连接失败")
-
-        print("服务器连接成功")
+    def _ensure_remote_directory(self, ssh_server, remote_directory):
         print("正在检查远程目录……")
 
         if not ssh_server.is_dir(remote_directory):
-            print("web_download 文件夹不存在，正在创建……")
+            print(
+                f"{remote_directory} 文件夹不存在，正在创建……"
+            )
             ssh_server.mkdir(
                 remote_directory,
                 parents=True
             )
-            print("web_download 文件夹创建成功")
+            print("远程文件夹创建成功")
         else:
-            print("web_download 文件夹已存在")
+            print("远程文件夹已存在")
 
-        print(
-            "开始上传iOS客户端……"
-            if self.is_ios
-            else "开始上传Android客户端……"
-        )
+    def _upload_windows(self, ssh_server):
+        resource_version = os.environ["ResourceVersion"]
+        latest_version = os.environ["LatestVersion"]
+        remote_directory = f"/var/www/launcher_download/{resource_version}"
+        config_directory = "/var/www/launcher_download/zip_online_config_json"
+        self._ensure_remote_directory(ssh_server, remote_directory)
+        self._ensure_remote_directory(ssh_server, config_directory)
 
-        remote_name = (
-            "蔚蓝档案.ipa"
-            if self.is_ios
-            else "蔚蓝档案.apk"
-        )
+        print("开始上传Windows客户端资源……")
+        windows_output = Path("蔚蓝档案-Windows")
+        for file_name in [
+            "resources.assets",
+            "resources.assets.resS",
+        ]:
+            local_path = windows_output / file_name
+            if not local_path.exists():
+                raise FileNotFoundError(f"未找到Windows资源: {local_path}")
+            ssh_server.upload_file(
+                str(local_path),
+                f"{remote_directory}/{file_name}",
+                create_parent=False
+            )
+            print(f"上传完成: {file_name}")
 
+        # 在线配置只修改JSON，不修改或复制Replace资源
+        json_path = self.modify_windows_online_config()
         ssh_server.upload_file(
-            str(self.final_apk),
-            f"{remote_directory}/{remote_name}",
+            str(json_path),
+            f"{config_directory}/{json_path.name}",
             create_parent=False
         )
-
-        print("上传完成")
+        print(f"上传完成: {json_path.name}")
+        print("Windows客户端资源上传完成。")
         print("正在更新Cloudflare KV……")
 
         cf = CF(
@@ -847,7 +1024,38 @@ class BuildUpdater:
             api_token=os.environ["CF_API_TOKEN"],
             kv_namespace_id="1f56e1bf592a4ea18d18b2237cdf822d"
         )
+        cf.kv.put(
+            "Windows_Resource",
+            {
+                "resourceVersion": latest_version,
+                "resourceUpdateTime": datetime.now(
+                    ZoneInfo("Asia/Shanghai")
+                ).strftime("%Y-%m-%d %H:%M:%S")
+            }
+        )
+        print("KV更新成功")
 
+    def _upload_mobile(self, ssh_server, version):
+        remote_directory = "/var/www/web_download"
+        self._ensure_remote_directory(ssh_server, remote_directory)
+        print(
+            "开始上传iOS客户端……"
+            if self.is_ios
+            else "开始上传Android客户端……"
+        )
+        remote_name = "蔚蓝档案.ipa" if self.is_ios else "蔚蓝档案.apk"
+        ssh_server.upload_file(
+            str(self.final_apk),
+            f"{remote_directory}/{remote_name}",
+            create_parent=False
+        )
+        print("上传完成")
+        print("正在更新Cloudflare KV……")
+        cf = CF(
+            account_id=os.environ["CF_ACCOUNT_ID"],
+            api_token=os.environ["CF_API_TOKEN"],
+            kv_namespace_id="1f56e1bf592a4ea18d18b2237cdf822d"
+        )
         cf.kv.put(
             "IPA_Resource" if self.is_ios else "APK_Resource",
             {
@@ -857,8 +1065,18 @@ class BuildUpdater:
                 ).strftime("%Y-%m-%d %H:%M:%S")
             }
         )
-
         print("KV更新成功")
+
+    def upload(self, version):
+        print("正在连接服务器……")
+        ssh_server = self._create_ssh_server()
+        print("正在检查服务器连接……")
+        if not ssh_server.test_connection():
+            raise RuntimeError("服务器连接失败")
+        print("服务器连接成功")
+        if self.is_windows:
+            return self._upload_windows(ssh_server)
+        return self._upload_mobile(ssh_server, version)
 
     # ─────────────────────────── 主流程 ──────────────────────────
 
@@ -874,34 +1092,45 @@ class BuildUpdater:
         upload: bool = False,
     ):
         try:
-            version = self.download()
+            version = self.download() if not self.is_windows else None
             self.prepare()
 
-            self.modify_apktool_yml()
-            self.modify_manifest(trustcert)
-
-            if trustcert:
-                self.install_trust_cert()
-
-            if modifylogin:
-                self.modify_login()
-
-            if modifygt4:
-                self.modify_gt4(modifygt4)
-
-            if replace:
-                self.replace_resources()
-
-            if sdkurl:
+            if self.is_windows:
                 self.modify_sdk_url(sdkurl)
 
-            if gamemainconfig:
-                self.modify_game_main_config(gamemainconfig)
+                if gamemainconfig:
+                    self.modify_game_main_config(gamemainconfig)
 
-            if modifybundle:
-                self.apply_bundle()
+                if modifybundle:
+                    self.apply_bundle()
 
-            self.rebuild()
+                self.rebuild()
+            else:
+                self.modify_apktool_yml()
+                self.modify_manifest(trustcert)
+
+                if trustcert:
+                    self.install_trust_cert()
+
+                if modifylogin:
+                    self.modify_login()
+
+                if modifygt4:
+                    self.modify_gt4(modifygt4)
+
+                if replace:
+                    self.replace_resources()
+
+                if sdkurl:
+                    self.modify_sdk_url(sdkurl)
+
+                if gamemainconfig:
+                    self.modify_game_main_config(gamemainconfig)
+
+                if modifybundle:
+                    self.apply_bundle()
+
+                self.rebuild()
 
             if upload:
                 self.upload(version)
