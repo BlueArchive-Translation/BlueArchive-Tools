@@ -4,6 +4,7 @@ import json
 import time
 import subprocess
 from dotenv import load_dotenv
+from utils.gmail import GmailSMTP
 from utils.regions import Server
 from utils.config import Config
 from utils.util import FileUtils, IL2CppDumper, ZipUtils
@@ -162,7 +163,7 @@ def run_update(regions, server):
         dumper.compile_python(os.path.join(os.path.abspath("Dumps"), "dump.cs"), "FlatData")
         print("成功生成FlatData库。")
         shutil.rmtree("Temp")
-    return env_changed, major, version
+    return env_changed, major, major_pc, version
 
 
 def main():
@@ -173,7 +174,7 @@ def main():
         help="选择服务器区域"
     )
     args = parser.parse_args()
-
+    mail = GmailSMTP()
     server = Server(args.server)
     git = Git()
 
@@ -184,7 +185,7 @@ def main():
         try:
             print(f"开始检查 {args.server} 更新。")
 
-            changed, major, version = run_update(args.server, server)
+            changed, major, major_pc, version = run_update(args.server, server)
 
             if changed:
                 print("检测到配置发生变化，开始提交 Git。")
@@ -193,7 +194,12 @@ def main():
                 git.add(Config.env_file.format(server=args.server))
                 git.commit(f"{args.server}服务器变动，提交配置。")
                 git.push()
-
+                if os.getenv("GITHUB_RUN_ID"):
+                    # 判断是否是GitHub运行
+                    mail.send_update_notice(
+                        server=args.server,
+                        run_id=os.getenv("GITHUB_RUN_ID")
+                    )
                 if major and args.server in ("JP", "GL", "CN"):
                     version_name = server.get_version_name()
                     print(f"当前FlatData版本名称: {version_name}")
