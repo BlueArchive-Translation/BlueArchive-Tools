@@ -78,7 +78,7 @@ def run_update(regions, server):
             )
 
             print("KV更新成功")
-            server.download_launcher_assets(res_ver, zip_url, ["resources.assets", "resources.assets.resS"], "Temp/assets/bin/Data")
+            server.download_launcher_assets(res_ver, zip_url, ["resources.assets", "resources.assets.resS"], "Temp/BlueArchive_Data")
         else:
             print(f"LatestVersion大版本一致 ({latest_ver})，尝试增量检查。")
 
