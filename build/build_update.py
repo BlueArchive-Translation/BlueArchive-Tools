@@ -26,55 +26,12 @@ from utils.regions import Server
 from utils.server import SSHServer
 from utils.util import CommandUtils, ZipUtils, FileUtils, FileDownloader
 
-
-class ClientConfig:
-    """各平台客户端的目录和修改配置。"""
-    SERVERS = {
-        "JP": {
-            "platform": "Android",
-            "data_path": "assets/bin/Data",
-            "replace_path": "assets",
-            "gt4_path": "assets/gt4.js",
-            "sdk_config_path": "assets/SDKConfigSettings.json",
-            "modify_login": True,
-        },
-        "JPiOS": {
-            "platform": "iOS",
-            "data_path": "Payload/BlueArchive.app/Data",
-            "replace_path": "Payload/BlueArchive.app/Data/Raw",
-            "gt4_path": "Payload/BlueArchive.app/GTCaptcha4.bundle/gt4.js",
-            "sdk_config_path": "Payload/BlueArchive.app/SDKConfigSettings.json",
-            "modify_login": False,
-        },
-        "JPPC": {
-            "platform": "Windows",
-            "data_path": "BlueArchive_Data",
-            "replace_path": "BlueArchive_Data/StreamingAssets",
-            "gt4_path": "",
-            "sdk_config_path": "",
-            "modify_login": False,
-        },
-        "GL": {
-            "platform": "Android",
-        },
-        "GLiOS": {
-            "platform": "iOS",
-        },
-    }
-
-    @classmethod
-    def get(cls, server):
-        if server not in cls.SERVERS:
-            raise ValueError(f"不支持的服务器: {server}")
-        return cls.SERVERS[server]
-
-
 class BaseBuilder:
     """所有客户端 Builder 的公共功能。"""
     def __init__(self, repo="BA-APKSRC", server="JP", workers=4):
         self.repo = Path(repo)
         self.server = server
-        self.config = ClientConfig.get(server)
+        self.config = Config.servers[server]
         self.workers = max(1, min(workers, os.cpu_count() or 4))
         self.base_dir = Path("Temp")
         self.main_output_path = self.base_dir / "MainOutput"
@@ -1231,22 +1188,6 @@ class WindowsBuilder(BaseBuilder):
             print(f"客户端更新完成: {self.final_path}")
         finally:
             self.cleanup()
-
-
-def create_builder(server, repo="BA-APKSRC", workers=4):
-    """根据服务器类型创建对应的客户端 Builder。"""
-    platform = ClientConfig.get(server)["platform"]
-    builders = {
-        "Android": AndroidBuilder,
-        "iOS": IOSBuilder,
-        "Windows": WindowsBuilder,
-    }
-    return builders[platform](
-        repo=repo,
-        server=server,
-        workers=workers,
-    )
-
 
 def parse_args():
     parser = argparse.ArgumentParser(

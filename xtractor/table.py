@@ -16,6 +16,7 @@ from utils.database import TableDatabase
 from utils.config import Config
 from utils.util import ZipUtils
 
+
 class TableProcess:
     def __init__(
         self, server: str = "JP", password: str = "", table_file_folder: str = "", extract_folder: str = "", flat_data_module_name: str = "FlatData"
@@ -49,8 +50,8 @@ class TableProcess:
                 f"{self.flat_data_module_name}.repack_wrapper"
             )
             self.lower_fb_name_modules = {
-            t_name.lower(): t_class
-            for t_name, t_class in flat_data_lib.__dict__.items()
+                t_name.lower(): t_class
+                for t_name, t_class in flat_data_lib.__dict__.items()
             }
         except Exception as e:
             notice(
@@ -81,7 +82,7 @@ class TableProcess:
         try:
             if flatbuffer_class.__name__.endswith("Table"):
                 try:
-                    if not file_name.endswith(".bytes") or Config.server != "CN": # CN does not encrypt its Excel.zip (but does encrypt tables in sqlite3 databases such as ExcelDB.db)
+                    if not file_name.endswith(".bytes") or self.server != "CN":
                         data = xor_with_key(flatbuffer_class.__name__, data)
                     flat_buffer = getattr(flatbuffer_class, "GetRootAs")(data)
                     obj = getattr(self.dump_wrapper_lib, "dump_table")(flat_buffer)
@@ -95,8 +96,6 @@ class TableProcess:
                 )(flat_buffer)
             return (obj, f"{flatbuffer_class.__name__}.json")
         except:
-            # if json_data := self.__process_json_file(file_name, data):
-            #     return json.loads(json_data), f"{file_name}.json"
             return {}, ""
 
     def _repack_bytes_file(
@@ -136,7 +135,7 @@ class TableProcess:
             # 与解压同流程加密
             if not (file_name.endswith(".bytes") and self.server == "CN") and xor_encrypt:
                 bytes_output = xor_with_key(class_name, bytes_output)
-            
+
             return bytes_output, f"{base_name}.bytes"
         except:
             return b"", ""
@@ -145,7 +144,7 @@ class TableProcess:
         """Extract json file in zip.
 
         Args:
-            file_name (str): File name.
+            file_name (str): File name. 
             data (bytes): Data of file.
 
         Returns:
@@ -217,6 +216,8 @@ class TableProcess:
                 )
         return data, "", False
 
+
+class TableExtract(TableProcess):
     def extract_db_file(self, file_path: str) -> bool:
         """Extract db file."""
         try:
@@ -288,9 +289,11 @@ class TableProcess:
         except Exception as e:
             notice(f"Error when process {file_name}: {e}")
 
+
+class TableRepack(TableProcess):
     def repack_to_zip(self, file_name: str) -> None:
         """Repack JSON files back to original zip file."""
-        try:            
+        try:
             zip_path = path.join(self.table_file_folder, file_name)
             password = zip_password(path.basename(file_name)) if Config.server != "CN" else None
 
@@ -309,12 +312,12 @@ class TableProcess:
                     if file.endswith(".json"):
                         with open(path.join(root, file), 'r', encoding='utf8') as f:
                             json_data = json.load(f)
-                        
+
                         item_data, new_name = self._repack_bytes_file(file, json_data, False)
-                        
+
                         if new_name:
                             # 将修改后的数据写回临时目录以备重新打包
-                            target_file_path = path.join("Temp", new_name) # 命中单个文件
+                            target_file_path = path.join("Temp", new_name)
                             with open(target_file_path, "wb") as f:
                                 f.write(item_data)
 
@@ -340,13 +343,13 @@ class TableProcess:
         try:
             db_name = file_name.removesuffix(".db")
             db_extract_folder = path.join(self.extract_folder, db_name)
-            
+
             db_path = path.join(self.table_file_folder, file_name)
 
             with TableDatabase(db_path, self.password) as db:
                 json_files = [f for f in os.listdir(db_extract_folder) if f.endswith(".json")]
                 total_files = len(json_files)
-                
+
                 for index, file in enumerate(json_files):
                     table_name = file.removesuffix(".json").replace("Excel", "DBSchema")
                     print(f"[{index + 1}/{total_files}] 正在转换数据表: {table_name} ...", end="\r")
@@ -374,75 +377,7 @@ class TableProcess:
 
                 print("正在优化数据库文件大小...")
                 db.execute("VACUUM")
-                
+
                 notice(f"Successfully repacked {file_name}")
         except Exception as e:
             notice(f"Error when repack {file_name}: {e}", "error")
-
-    def process_table(self, file_path: str, type: str = "Extract") -> None:
-        """Extract or Repack a table by file path.
-
-        Args:
-            file_path (str): Relative path of .zip or .db.
-            repack (bool): If True, repack data from extract folder back to file_path.
-        """
-        if not file_path.endswith((".zip", ".db")):
-            notice(f"The file {file_path} is not supported in current implementation.")
-            return
-
-        if file_path.endswith(".zip"):
-            if type == "Repack":
-                self.repack_to_zip(file_path)
-            else:
-                self.extract_zip_file(file_path)
-
-        if file_path.endswith(".db"):
-            if type == "Repack":
-                self.repack_to_db(file_path)
-            else:
-                self.extract_db_file(file_path)
-
-def process_excel(
-    table_file_folder: str | Path,
-    file_path: str | Path,
-    server: str,
-    type: str,
-    db_key: str | None = None,
-):
-    """
-    JSON 数据提取/打包工具
-
-    Args:
-        table_file_folder: ExcelDB.db 和 Excel.zip 所在目录
-        file_path: 文件输出路径 / 需打包的文件输入路径
-        server: 服务器区域，可选 CN / GL / JP
-        type: 操作类型，可选 Extract / Repack
-        db_key: 数据库加解密密钥，可选
-    """
-
-    table_file_folder = Path(table_file_folder)
-    file_path = Path(file_path)
-
-    if server not in ("CN", "GL", "JP"):
-        raise ValueError(f"不支持的 server: {server}")
-
-    if type not in ("Extract", "Repack"):
-        raise ValueError(f"不支持的 type: {type}")
-
-    file_path.mkdir(parents=True, exist_ok=True)
-
-    process = TableProcess(
-        server,
-        db_key,
-        str(table_file_folder),
-        str(file_path),
-    )
-
-    excel_db = table_file_folder / "ExcelDB.db"
-    excel_zip = table_file_folder / "Excel.zip"
-
-    if excel_db.exists():
-        process.process_table("ExcelDB.db", type)
-
-    if excel_zip.exists():
-        process.process_table("Excel.zip", type)

@@ -13,46 +13,10 @@ from utils.util import ZipUtils, FileUtils, AsarUtils, CommandUtils, FileDownloa
 from xtractor.bundle import BundleExtractor
 
 class Server:
-    SERVERS = {
-        "JP": {
-            "platform": "Android",
-            "data_path": "assets/bin/Data",
-            "replace_path": "assets",
-        },
-        "JPiOS": {
-            "platform": "iOS",
-            "data_path": "Payload/BlueArchive.app/Data",
-            "replace_path": "Payload/BlueArchive.app/Data/Raw",
-        },
-        "JPPC": {
-            "platform": "Windows",
-            "data_path": "BlueArchive_Data",
-            "replace_path": "BlueArchive_Data",
-        },
-        "CN": {
-            "platform": "Android",
-            "data_path": "assets/bin/Data",
-            "replace_path": "assets",
-        },
-        # 预留
-        # "GL": {
-        #     "platform": "Android",
-        #     "data_path": "assets/bin/Data",
-        #     "replace_path": "assets",
-        # },
-        # "GLiOS": {
-        #     "platform": "iOS",
-        #     "data_path": "Payload/BlueArchive.app/Data",
-        #     "replace_path": "Payload/BlueArchive.app/Data/Raw",
-        # },
-    }
-
     def __init__(self, server):
         self.server = server
-        self.config = self.SERVERS.get(server, {})
-        self.platform = self.config.get("platform")
+        self.config = Config.servers.get(server, {})
         self.data_path = self.config.get("data_path")
-        self.replace_path = self.config.get("replace_path")
 
     def main(self, apk_url):
         """ 大版本更新提取包体并解压 """

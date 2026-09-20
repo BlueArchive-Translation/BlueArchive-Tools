@@ -263,25 +263,23 @@ def main():
                         print("没有检测到FlatData变动，跳过提交。")
 
                 if args.server in ("JP", "GL", "CN"):
-                    types = ["Table"]
+                    types = ["Extract"]
 
                     if args.server in ("GL", "CN"):
                         types.append("Voice")
 
                     if args.server == "JP":
-                        types.append("RepackTable")
+                        types.append("Repack")
 
                     for event_type in types:
-                        payload = {
-                            "server": args.server,
-                            "platform": "auto",
-                            "modify_name": "false",
-                            "debug": "false",
-                            "voice_lang": "Default",
-                            "catalog": "true",
-                            "upload": "true"
-                        }
-                        git.dispatch(event_type, payload)
+                        resource_types = ["Table", "Media", "Bundle"] if event_type == "Extract" else ["Table"]
+
+                        for resource_type in resource_types:
+                            payload = {
+                                "server": args.server,
+                                "type": resource_type
+                            }
+                            git.dispatch(event_type, payload)
 
                 # 调换先后顺序，build占用导致请求发送慢了
                 if major and args.server == "JPPC":

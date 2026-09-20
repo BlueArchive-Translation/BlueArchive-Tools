@@ -8,28 +8,27 @@ __pycache__/
 
 # Temporary
 Temp*/
-temp/
+temp*/
 .tmp/
 .cache/
 
 # Test / Backup
-测试/
 测试*/
 测试*
-test/
+test*/
 backup/
 .backup/
 
 # Input / Output
-input/
-output/
-Download/
-download/
-Extracted/
+input*/
+output*/
+Download*/
+download*/
+Extracted*/
 
 # Audio / Voice
-audio/
-Voice/
+audio*/
+Voice*/
 
 # Game extraction
 FlatData/
@@ -58,3 +57,9 @@ account.json
 
 # Decompiled / generated code
 dump.cs
+
+# API端代码
+code/
+lib/
+request_api/
+config.py
