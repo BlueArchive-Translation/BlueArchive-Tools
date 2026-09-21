@@ -10,10 +10,11 @@ class Config:
         "BlueArchiveTools.{platform_id}.zip"
     )
     env_file = "config/{server}.env"
-    FlatData = "git@github.com:beichen23333/BA-FlatData.git"
-    pc_src = "git@github.com:BlueArchive-Translation/BA-PC.git"
-    apk_src = "https://github.com/BlueArchive-Translation/BA-APKSRC.git"
-    api = "git@github.com:BlueArchive-Translation/BlueArchive-API.git"
+    FlatData = "FlatData"
+    FlatData_repositories = "git@github.com:beichen23333/BA-FlatData.git"
+    PC_repositories = "git@github.com:BlueArchive-Translation/BA-PC.git"
+    APK_repositories = "https://github.com/BlueArchive-Translation/BA-APKSRC.git"
+    API_repositories = "git@github.com:BlueArchive-Translation/BlueArchive-API.git"
 
     servers = {
         "JP": {

@@ -84,7 +84,7 @@ class ResourceDownloader:
                 url = f"{self.addressable_catalog_url}/Preload/TableBundles/{file}"
             elif self.regions == "CN":
                 crc = str(catalog.get("Table", {}).get(file, {}).get("Crc", ""))
-                url = f"{self.addressable_catalog_url}/pool/MediaResources/{crc[:2]}/{crc}"
+                url = f"{self.addressable_catalog_url}/pool/TableBundles/{crc[:2]}/{crc}"
             else:
                 return file, None
             if save_path:

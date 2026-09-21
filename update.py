@@ -216,7 +216,7 @@ def main():
 
                     if not os.path.exists(flatdata_dir):
                         print("未找到BA-FlatData目录，开始克隆仓库。")
-                        git.clone(Config.FlatData, flatdata_dir)
+                        git.clone(Config.FlatData_repositories, flatdata_dir)
 
                     flatdata_git = Git(flatdata_dir)
 
@@ -287,7 +287,7 @@ def main():
                     pc_src_git = Git(pc_src_dir)
 
                     pc_src_git.init()
-                    pc_src_git.add_remote("origin", Config.pc_src)
+                    pc_src_git.add_remote("origin", Config.PC_repositories)
                     pc_src_git.fetch("main")
                     pc_src_git.checkout("main")
                     pc_src_git.add(".")
@@ -303,7 +303,7 @@ def main():
                     pc_install_git = Git(pc_install_dir)
 
                     pc_install_git.init()
-                    pc_install_git.add_remote("origin", Config.pc_src)
+                    pc_install_git.add_remote("origin", Config.PC_repositories)
                     pc_install_git.fetch("install")
                     pc_install_git.checkout("install")
                     pc_install_git.add(".")
@@ -333,7 +333,7 @@ def main():
 
                     if not os.path.exists(apk_src_dir):
                         print("未找到BA-APKSRC目录，开始克隆仓库。")
-                        git.clone(Config.apk_src, apk_src_dir)
+                        git.clone(Config.APK_repositories, apk_src_dir)
 
                     updater = BuildUpdater(
                         repo=apk_src_dir,

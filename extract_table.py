@@ -13,12 +13,21 @@ from utils.util import ZipUtils
 from xtractor.table import TableExtract
 
 
-def prepare_api():
+def prepare_api(server):
+    if server not in ("JP", "GL"):
+        return
+
+    required_dirs = ("lib", "code", "request_api")
+
+    if all(os.path.isdir(name) for name in required_dirs):
+        print("API依赖已存在，跳过克隆。")
+        return
+
     temp_path = tempfile.mkdtemp(prefix="API_")
     try:
-        Git().clone(Config.api, temp_path)
+        Git().clone(Config.API_repositories, temp_path)
 
-        for name in ("lib", "code", "request_api"):
+        for name in required_dirs:
             source = os.path.join(temp_path, name)
             target = os.path.join(".", name)
 
@@ -98,7 +107,7 @@ def extract_table(server, key, temp_path, output_path):
         password=key,
         table_file_folder=temp_path,
         extract_folder=output_path,
-        flat_data_module_name="FlatData"
+        flat_data_module_name=Config.FlatData
     )
 
     if not table.extract_db_file("ExcelDB.db"):
@@ -165,3 +174,7 @@ if __name__ == "__main__":
         shutil.rmtree(temp_path, ignore_errors=True)
         shutil.rmtree(output_path, ignore_errors=True)
         print("临时文件夹已删除。")
+
+
+
+
