@@ -95,6 +95,12 @@ class Git:
     def set_remote_url(self, remote: str, url: str):
         self.run("remote", "set-url", remote, url)
 
+    def lfs_install(self):
+        self.run("lfs", "install")
+
+    def lfs_track(self, path: str):
+        self.run("lfs", "track", path)
+
     def dispatch(self, event_type: str, payload: dict):
         token = os.environ["UPDATE_TOKEN"]
         repository = os.environ["GITHUB_REPOSITORY"]

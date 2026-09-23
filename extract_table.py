@@ -44,6 +44,18 @@ def prepare_api(server):
     finally:
         shutil.rmtree(temp_path, ignore_errors=True)
 
+def prepare_flatdata(server):
+    print("正在克隆 FlatData 仓库...")
+
+    Git().clone(
+        Config.FlatData_repositories,
+        Config.FlatData_path
+    )
+
+    git = Git(Config.FlatData_path)
+    git.checkout(server)
+
+    print(f"FlatData 已切换到 {server} 分支。")
 
 def get_key(server, region=None):
     from request_api.YostarAPI.QueuingAPI import QueuingAPI as YostarQueuingAPI
@@ -101,22 +113,89 @@ def download_table(download, temp_path):
     raise RuntimeError(f"未知的下载状态: {files}")
 
 
-def extract_table(server, key, temp_path, output_path):
-    table = TableExtract(
-        server=server,
-        password=key,
-        table_file_folder=temp_path,
-        extract_folder=output_path,
-        flat_data_module_name=Config.FlatData
-    )
+def find_large_files(root_path, paths, min_size=100 * 1024 * 1024):
+    files = []
 
-    if not table.extract_db_file("ExcelDB.db"):
-        raise RuntimeError("ExcelDB.db 处理失败。")
+    for relative_path in paths:
+        target_path = os.path.join(root_path, relative_path)
 
-    table.extract_zip_file("Excel.zip")
+        if not os.path.exists(target_path):
+            continue
 
-    print(f"Table处理完成: {output_path}")
-    return output_path
+        for root, _, filenames in os.walk(target_path):
+            for filename in filenames:
+                file_path = os.path.join(root, filename)
+
+                if os.path.getsize(file_path) > min_size:
+                    files.append(os.path.relpath(file_path, root_path))
+
+    return files
+
+
+def publish_table_bundles(server, version_name, zip_path, output_path):
+    repo_path = tempfile.mkdtemp(prefix="TableBundles_")
+    try:
+        print("正在克隆 TableBundles 仓库...")
+        Git().clone(Config.TableBundles_repositories, repo_path)
+
+        git = Git(repo_path)
+
+        git.checkout("main")
+
+        shutil.copy2(
+            zip_path,
+            os.path.join(repo_path, os.path.basename(zip_path))
+        )
+
+        git.add(os.path.basename(zip_path))
+
+        if git.has_staged_changes():
+            git.commit(f"Update Table {version_name}")
+            git.push("main")
+            print("main 分支提交完成。")
+        else:
+            print("main 分支没有需要提交的修改。")
+
+        git.checkout(server)
+
+        for name in ("Excel", "ExcelDB"):
+            source = os.path.join(output_path, name)
+            target = os.path.join(repo_path, name)
+
+            if os.path.exists(target):
+                if os.path.isdir(target):
+                    shutil.rmtree(target)
+                else:
+                    os.remove(target)
+
+            shutil.copytree(source, target)
+
+        large_files = find_large_files(
+            repo_path,
+            ["Excel", "ExcelDB"]
+        )
+
+        if large_files:
+            git.lfs_install()
+
+            for file_path in large_files:
+                print(f"启用 Git LFS: {file_path}")
+                git.lfs_track(file_path)
+
+            git.add(".gitattributes")
+
+        git.add("Excel")
+        git.add("ExcelDB")
+
+        if git.has_staged_changes():
+            git.commit(f"Update Table {version_name}")
+            git.push(server)
+            print(f"{server} 分支提交完成。")
+        else:
+            print(f"{server} 分支没有需要提交的修改。")
+    finally:
+        shutil.rmtree(repo_path, ignore_errors=True)
+        print("TableBundles 临时仓库已删除。")
 
 
 if __name__ == "__main__":
@@ -125,7 +204,7 @@ if __name__ == "__main__":
     parser.add_argument("region", nargs="?", choices=["kr", "tw", "asia", "na", "global"], default="na", help="GL区服")
     args = parser.parse_args()
 
-    prepare_api()
+    prepare_api(args.server)
 
     key = None
     if args.server in ("JP", "GL"):
@@ -155,7 +234,21 @@ if __name__ == "__main__":
             print("检查结束，程序退出。")
             raise SystemExit(1)
 
-        extract_table(args.server, key, temp_path, output_path)
+        prepare_flatdata(args.server)
+
+        table = TableExtract(
+            server=args.server,
+            password=key,
+            table_file_folder=temp_path,
+            extract_folder=output_path,
+            flat_data_module_name=Config.FlatData
+        )
+
+        table.extract_db_file("ExcelDB.db"):
+
+        table.extract_zip_file("Excel.zip")
+
+        print(f"Table处理完成: {output_path}")
 
         version_name = server.get_version_name(
             is_full_name=True,
@@ -170,11 +263,14 @@ if __name__ == "__main__":
         )
 
         print(f"打包完成: {zip_path}")
+
+        publish_table_bundles(
+            args.server,
+            version_name,
+            zip_path,
+            output_path
+        )
     finally:
         shutil.rmtree(temp_path, ignore_errors=True)
         shutil.rmtree(output_path, ignore_errors=True)
         print("临时文件夹已删除。")
-
-
-
-

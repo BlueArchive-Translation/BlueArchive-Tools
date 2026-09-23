@@ -11,10 +11,12 @@ class Config:
     )
     env_file = "config/{server}.env"
     FlatData = "FlatData"
+    FlatData_path = "./FlatData"
     FlatData_repositories = "git@github.com:beichen23333/BA-FlatData.git"
     PC_repositories = "git@github.com:BlueArchive-Translation/BA-PC.git"
     APK_repositories = "https://github.com/BlueArchive-Translation/BA-APKSRC.git"
     API_repositories = "git@github.com:BlueArchive-Translation/BlueArchive-API.git"
+    TableBundles_repositories = "git@github.com:beichen23333/BA-TableBundles.git"
 
     servers = {
         "JP": {
