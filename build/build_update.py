@@ -67,7 +67,9 @@ class BaseBuilder:
         if ssh_server.is_dir(remote_directory):
             print(f"远程文件夹已存在: {remote_directory}")
             return
+
         print(f"远程文件夹不存在，正在创建: {remote_directory}")
+
         ssh_server.mkdir(remote_directory, parents=True)
         print("远程文件夹创建成功")
 
@@ -75,15 +77,18 @@ class BaseBuilder:
         """扫描 Unity Bundle，并替换 Modified 中的资源。"""
         print("正在替换Bundle资源。")
         modified_dir = self.repo / "Modified"
+
         if not modified_dir.exists():
             print("未找到Modified目录，跳过Bundle修改。")
             return
 
         extractor = BundleExtractor()
         data_folder = str(self.data_path)
+
         if not self.asset_index:
             print(f"正在扫描bundle目录建立索引: {data_folder}")
             self.asset_index = build_asset_index(extractor, data_folder)
+
         print(f"索引资源名数量: {len(self.asset_index)}。")
 
         tasks = []
@@ -95,12 +100,16 @@ class BaseBuilder:
                     item for item in self.asset_index.get(asset_name, [])
                     if item.get("source_path")
                 ]
+
                 if not matches:
                     print(f"[跳过] 未在bundle中找到资源: {asset_name}")
                     continue
+
                 seen_files = set()
+
                 for match in matches:
                     target = match["source_path"]
+
                     if target and target not in seen_files:
                         seen_files.add(target)
                         tasks.append((asset_name, target, match, file_path))
@@ -110,13 +119,17 @@ class BaseBuilder:
             return
 
         print(f"共 {len(tasks)} 个bundle修改任务，使用 {self.workers} 进程并行处理……")
+
         bin_path = extractor.bin_path
+
         work_items = [
             (bin_path, target, match, asset_name, file_path, True)
             for asset_name, target, match, file_path in tasks
         ]
+
         with multiprocessing.Pool(processes=self.workers) as pool:
             results = pool.map(_bundle_replace_worker, work_items)
+
         success = sum(1 for _, ok in results if ok)
         print(f"bundle文件修改完成，成功 {success}/{len(results)}。")
 
@@ -124,6 +137,7 @@ class BaseBuilder:
         """修改 Android/iOS/Windows 的 SDK 地址。"""
         if not sdkurl:
             return
+
         self._modify_sdk_url(sdkurl)
 
     def _modify_sdk_url(self, sdkurl):
@@ -185,31 +199,27 @@ class BaseBuilder:
 
     def cleanup(self):
         """清理本次构建产生的临时文件。"""
-        for path in [
-            self.main_output_path,
-            getattr(self, "decoded_path", None),
-            getattr(self, "temp_extract_path", None),
-            getattr(self, "dex_backup_path", None),
-        ]:
+        for path in [self.main_output_path, getattr(self, "decoded_path", None), getattr(self, "temp_extract_path", None), getattr(self, "dex_backup_path", None)]:
             if path and path.exists():
                 shutil.rmtree(path)
 
-        for path in [
-            getattr(self, "apk_path", None),
-            getattr(self, "raw_apk", None),
-            getattr(self, "temp_align", None),
-        ]:
+        for path in [getattr(self, "apk_path", None), getattr(self, "raw_apk", None), getattr(self, "temp_align", None)]:
             if path and path.exists():
                 path.unlink()
 
     def upload(self, version):
         """上传构建结果。"""
         print("正在连接服务器……")
+
         ssh_server = self._create_ssh_server()
+
         print("正在检查服务器连接……")
+
         if not ssh_server.test_connection():
             raise RuntimeError("服务器连接失败")
+
         print("服务器连接成功")
+
         self._upload(ssh_server, version)
 
     def _upload(self, ssh_server, version):
@@ -245,19 +255,17 @@ class AndroidBuilder(BaseBuilder):
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
         apk_url, version = Server(self.server).get_apk_url()
-        FileDownloader(
-            url=apk_url,
-            headers={"User-Agent": "Androidkb"},
-        ).save_file(str(self.apk_path))
-
-        print(f"版本: {version}")
+        FileDownloader(url=apk_url, headers={"User-Agent": "Androidkb"}).save_file(str(self.apk_path))
         return version
 
     def extract(self, apk_path, output_dir=None):
         output_dir = Path(output_dir or self.main_output_path)
+
         if output_dir.exists():
             shutil.rmtree(output_dir)
+
         print("正在解包……")
+
         return self._run_apktool([
             "d",
             "-f",
@@ -269,7 +277,9 @@ class AndroidBuilder(BaseBuilder):
     def build(self, input_dir=None, output_apk=None):
         input_dir = Path(input_dir or self.main_output_path)
         output_apk = Path(output_apk or self.raw_apk)
+
         print("正在打包……")
+
         return self._run_apktool([
             "b",
             str(input_dir),
@@ -280,27 +290,36 @@ class AndroidBuilder(BaseBuilder):
     def prepare(self):
         """解压 Split APK 并合并资源。"""
         print("正在解压APK。")
+
         ZipUtils.extract_zip(
             str(self.apk_path),
             str(self.decoded_path / "assets"),
             keywords=["assets/com.YostarJP.BlueArchive"],
         )
 
+        # 寻找三个APK
         apks = FileUtils.find_files(
             str(self.decoded_path / "assets"),
             ["UnityDataAssetPack", "config", "BlueArchive"],
         )
+
+        # 拿到主APK
         main_apk = next(
             apk for apk in apks
             if "UnityDataAssetPack" not in apk and "config" not in apk
         )
+
+        # 其他两个APK
         others = [apk for apk in apks if apk != main_apk]
 
         print("正在提取APK V1签名校验。")
+
+        # 拿官签
         config_apk = next(
             (apk for apk in apks if "config" in apk.lower()),
             None,
         )
+
         if not config_apk:
             raise FileNotFoundError("未找到包含官方 v1 签名的 config APK")
 
@@ -316,12 +335,12 @@ class AndroidBuilder(BaseBuilder):
                     self.official_v1_signatures[name] = official_zip.read(name)
 
         if not self.official_v1_signatures:
-            raise FileNotFoundError(
-                f"config APK 中未找到官方 v1 签名文件: {config_apk}"
-            )
+            raise FileNotFoundError(f"config APK 中未找到官方 v1 签名文件: {config_apk}")
 
         print("正在备份DEX。")
+
         self.dex_backup_path.mkdir(parents=True, exist_ok=True)
+
         with zipfile.ZipFile(main_apk, "r") as apk_zip:
             for dex in [
                 name for name in apk_zip.namelist()
@@ -330,26 +349,32 @@ class AndroidBuilder(BaseBuilder):
                 (self.dex_backup_path / dex).write_bytes(apk_zip.read(dex))
 
         print("正在合并APK。")
+
         self.extract(main_apk)
+
         ZipUtils.extract_zip(others, str(self.temp_extract_path))
 
         for folder in ["lib", "assets"]:
             src = self.temp_extract_path / folder
+
             if src.exists():
                 copy_tree(str(src), str(self.main_output_path / folder))
 
         shutil.rmtree(self.decoded_path)
         shutil.rmtree(self.temp_extract_path)
         self.apk_path.unlink()
+
         print("prepare流程完成。")
 
     def modify_manifest(self, trustcert=False):
         print("正在合并apk……")
+
         manifest_path = self.main_output_path / "AndroidManifest.xml"
         content = manifest_path.read_text(encoding="utf-8")
         root = etree.fromstring(content.encode("utf-8"))
         android_ns = "http://schemas.android.com/apk/res/android"
 
+        # 信任CA证书
         if trustcert:
             app_element = root.find(".//application")
             if app_element is not None:
@@ -396,47 +421,41 @@ class AndroidBuilder(BaseBuilder):
             return
 
         print("正在修改yostar登录文本。")
-        try:
-            res_data = json.loads(
-                (self.repo / "resources.json").read_text(encoding="utf-8")
+
+        res_data = json.loads((self.repo / "resources.json").read_text(encoding="utf-8"))
+        ja_path = self.main_output_path / "res/values-ja/strings.xml"
+        content = ja_path.read_text(encoding="utf-8")
+
+        for item in res_data:
+            # 根据json表替换文本
+            content = re.sub(
+                rf'(?s)<string name="{re.escape(item["name"])}">.*?</string>',
+                f'<string name="{item["name"]}">{item["text"]}</string>',
+                content,
             )
-            ja_path = self.main_output_path / "res/values-ja/strings.xml"
-            content = ja_path.read_text(encoding="utf-8")
 
-            for item in res_data:
-                content = re.sub(
-                    rf'(?s)<string name="{re.escape(item["name"])}">.*?</string>',
-                    f'<string name="{item["name"]}">{item["text"]}</string>',
-                    content,
-                )
-
-            ja_path.write_text(content, encoding="utf-8")
-            print("yostar登录文本修改完成。")
-        except Exception:
-            pass
+        ja_path.write_text(content, encoding="utf-8")
+        print("yostar登录文本修改完成。")
 
     def modify_gt4(self, modifygt4="zho"):
-        if not modifygt4:
-            return
-
         print("正在修改极验校验文本。")
-        gt4_path = self.gt4_path
-        if not gt4_path.exists():
-            print(f"[跳过] 未找到gt4.js: {gt4_path}")
-            return
 
         original_codec = CRC32()
-        with gt4_path.open("rb") as file:
+
+        with self.gt4_path.open("rb") as file:
             consume(original_codec, file)
+
         original_crc_int = original_codec.digest()
 
-        content = gt4_path.read_text(encoding="utf-8")
+        content = self.gt4_path.read_text(encoding="utf-8")
+
         old_str = (
             "lang: config.language? config.language : "
             "navigator.appName === 'Netscape' ? "
             "navigator.language.toLowerCase() : "
             "navigator.userLanguage.toLowerCase()"
         )
+
         if old_str in content:
             content = content.replace(old_str, f"lang: '{modifygt4}'")
 
@@ -454,6 +473,7 @@ class AndroidBuilder(BaseBuilder):
         target_pos = data.index(patch_marker) + len(b'userConfig._crcPatch = "')
 
         output_io = io.BytesIO()
+
         apply_patch(
             crc=CRC32(),
             target_checksum=original_crc_int,
@@ -462,54 +482,36 @@ class AndroidBuilder(BaseBuilder):
             target_pos=target_pos,
             overwrite=False,
         )
-        gt4_path.write_bytes(output_io.getvalue())
 
-        final_codec = CRC32()
-        with gt4_path.open("rb") as file:
-            consume(final_codec, file)
-        final_crc = final_codec.digest()
-
-        print(f"  --> gt4.js 原始 CRC: 0x{original_crc_int:08X}")
-        print(f"  --> gt4.js 最终 CRC: 0x{final_crc:08X}")
-        if final_crc != original_crc_int:
-            raise RuntimeError("gt4.js CRC 修补失败")
-        print("gt4登录文本修改完成，CRC修补校验匹配。")
+        self.gt4_path.write_bytes(output_io.getvalue())
+        print("gt4登录文本修改完成。")
 
     def _modify_sdk_url(self, sdkurl):
         print("正在修改SDKConfigSettings.json。")
+
         sdk_config_path = self.sdk_config_path
-        if not sdk_config_path.exists():
-            raise FileNotFoundError(
-                f"未找到SDKConfigSettings.json: {sdk_config_path}"
-            )
 
         original_codec = CRC32()
+
         with sdk_config_path.open("rb") as file:
             consume(original_codec, file)
+
         original_crc_int = original_codec.digest()
 
-        sdk_config = json.loads(
-            sdk_config_path.read_text(encoding="utf-8")
-        )
+        sdk_config = json.loads(sdk_config_path.read_text(encoding="utf-8"))
         sdk_config["Regions"]["Jp"]["Sdk_Url"] = sdkurl
         sdk_config["crc"] = ""
 
-        compact = json.dumps(
-            sdk_config,
-            separators=(",", ":"),
-            ensure_ascii=False,
-        )
+        compact = json.dumps(sdk_config, separators=(",", ":"), ensure_ascii=False)
         data = compact.encode("utf-8")
         marker = b'"crc":""'
         target_pos = data.index(marker) + len(b'"crc":') + 1
 
         codec_before = CRC32()
         consume(codec_before, io.BytesIO(data))
-        print(f"\n[DEBUG CRC] 正在处理文件: {sdk_config_path.name}")
-        print(f"  --> 原文件目标 CRC (Expected) : 0x{original_crc_int:08X}")
-        print(f"  --> 修改后、Patch前 CRC       : 0x{codec_before.digest():08X}")
 
         output_io = io.BytesIO()
+
         apply_patch(
             crc=CRC32(),
             target_checksum=original_crc_int,
@@ -518,17 +520,8 @@ class AndroidBuilder(BaseBuilder):
             target_pos=target_pos,
             overwrite=False,
         )
+
         sdk_config_path.write_bytes(output_io.getvalue())
-
-        final_codec = CRC32()
-        with sdk_config_path.open("rb") as file:
-            consume(final_codec, file)
-        final_crc = final_codec.digest()
-
-        print(f"  --> Patch插入后 CRC (Final)    : 0x{final_crc:08X}")
-        if final_crc != original_crc_int:
-            raise RuntimeError("SDKConfigSettings.json CRC 修补失败")
-        print("  --> [成功] CRC 修补校验匹配！\n")
         print("SDKConfigSettings.json修改完成。")
 
     def modify_apktool_yml(self):
@@ -563,10 +556,7 @@ class AndroidBuilder(BaseBuilder):
         print("正在恢复时间。")
         target_date = (1981, 1, 1, 0, 0, 0)
 
-        with zipfile.ZipFile(self.raw_apk, "r") as zin, zipfile.ZipFile(
-            self.temp_align,
-            "w",
-        ) as zout:
+        with zipfile.ZipFile(self.raw_apk, "r") as zin, zipfile.ZipFile(self.temp_align, "w",) as zout:
             for item in zin.infolist():
                 if item.filename.startswith("classes") and item.filename.endswith(".dex"):
                     continue
@@ -662,24 +652,12 @@ class AndroidBuilder(BaseBuilder):
             key,
             {
                 "resourceVersion": version,
-                "resourceUpdateTime": datetime.now(
-                    ZoneInfo("Asia/Shanghai")
-                ).strftime("%Y-%m-%d %H:%M:%S"),
+                "resourceUpdateTime": datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S"),
             },
         )
         print("KV更新成功")
 
-    def run(
-        self,
-        sdkurl="",
-        gamemainconfig="",
-        trustcert=False,
-        modifylogin=True,
-        modifygt4="",
-        replace=True,
-        modifybundle=True,
-        upload=False,
-    ):
+    def run(self, sdkurl="", gamemainconfig="", trustcert=False, modifylogin=True, modifygt4="zho", replace=True, modifybundle=True, upload=False):
         try:
             version = self.download()
             self.prepare()
@@ -724,10 +702,7 @@ class IOSBuilder(BaseBuilder):
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
         apk_url, version = Server(self.server).get_apk_url()
-        FileDownloader(
-            url=apk_url,
-            headers={"User-Agent": "Androidkb"},
-        ).save_file(str(self.apk_path))
+        FileDownloader(url=apk_url, headers={"User-Agent": "Androidkb"}).save_file(str(self.apk_path))
 
         print(f"版本: {version}")
         return version
@@ -742,6 +717,7 @@ class IOSBuilder(BaseBuilder):
             parents=True,
             exist_ok=True,
         )
+
         ZipUtils.extract_zip(
             str(self.apk_path),
             str(self.main_output_path),
@@ -756,28 +732,17 @@ class IOSBuilder(BaseBuilder):
 
     def _modify_sdk_url(self, sdkurl):
         print("正在修改SDKConfigSettings.json。")
-        sdk_config_path = self.sdk_config_path
-        if not sdk_config_path.exists():
-            raise FileNotFoundError(
-                f"未找到SDKConfigSettings.json: {sdk_config_path}"
-            )
 
         original_codec = CRC32()
-        with sdk_config_path.open("rb") as file:
+        with self.sdk_config_path.open("rb") as file:
             consume(original_codec, file)
         original_crc_int = original_codec.digest()
 
-        sdk_config = json.loads(
-            sdk_config_path.read_text(encoding="utf-8")
-        )
+        sdk_config = json.loads(self.sdk_config_path.read_text(encoding="utf-8"))
         sdk_config["Regions"]["Jp"]["Sdk_Url"] = sdkurl
         sdk_config["crc"] = ""
 
-        data = json.dumps(
-            sdk_config,
-            separators=(",", ":"),
-            ensure_ascii=False,
-        ).encode("utf-8")
+        data = json.dumps(sdk_config, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
         marker = b'"crc":""'
         target_pos = data.index(marker) + len(b'"crc":') + 1
@@ -791,18 +756,7 @@ class IOSBuilder(BaseBuilder):
             target_pos=target_pos,
             overwrite=False,
         )
-        sdk_config_path.write_bytes(output_io.getvalue())
-
-        final_codec = CRC32()
-        with sdk_config_path.open("rb") as file:
-            consume(final_codec, file)
-
-        final_crc = final_codec.digest()
-        print(f"  --> 原始 CRC: 0x{original_crc_int:08X}")
-        print(f"  --> 最终 CRC: 0x{final_crc:08X}")
-
-        if final_crc != original_crc_int:
-            raise RuntimeError("SDKConfigSettings.json CRC 修补失败")
+        self.sdk_config_path.write_bytes(output_io.getvalue())
         print("SDKConfigSettings.json修改完成。")
 
     def rebuild(self):
@@ -811,11 +765,7 @@ class IOSBuilder(BaseBuilder):
         if self.final_path.exists():
             self.final_path.unlink()
 
-        with zipfile.ZipFile(
-            self.final_path,
-            "w",
-            zipfile.ZIP_DEFLATED,
-        ) as zout:
+        with zipfile.ZipFile(self.final_path, "w", zipfile.ZIP_DEFLATED,) as zout:
             for root, _, files in os.walk(self.main_output_path):
                 for file_name in files:
                     file_path = Path(root) / file_name
@@ -846,20 +796,12 @@ class IOSBuilder(BaseBuilder):
             "IPA_Resource",
             {
                 "resourceVersion": version,
-                "resourceUpdateTime": datetime.now(
-                    ZoneInfo("Asia/Shanghai")
-                ).strftime("%Y-%m-%d %H:%M:%S"),
+                "resourceUpdateTime": datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S"),
             },
         )
         print("KV更新成功")
 
-    def run(
-        self,
-        sdkurl="",
-        gamemainconfig="",
-        modifybundle=True,
-        upload=False,
-    ):
+    def run(self, sdkurl="", gamemainconfig="", modifybundle=True, upload=False,):
         try:
             version = self.download()
             self.prepare()
@@ -965,31 +907,22 @@ class WindowsBuilder(BaseBuilder):
 
         modified_dir = self.repo / "Modified"
         modified_dir.mkdir(parents=True, exist_ok=True)
-        (modified_dir / "SDKConfigSettings").write_bytes(
-            json.dumps(
-                sdk_config,
-                separators=(",", ":"),
-                ensure_ascii=False,
-            ).encode("utf-8")
-        )
+        (modified_dir / "SDKConfigSettings").write_bytes(json.dumps(sdk_config, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+        # 不用改crc
         print("Bundle中的SDKConfigSettings修改完成。")
 
     def _get_online_config(self):
         config_dir = Path("zip_online_config_json")
         if not config_dir.exists():
-            raise FileNotFoundError(
-                f"未找到在线配置目录: {config_dir}"
-            )
+            raise FileNotFoundError(f"未找到配置目录: {config_dir}")
 
         json_files = list(config_dir.glob("*.json"))
         if not json_files:
-            raise FileNotFoundError(
-                f"未找到在线配置JSON: {config_dir}"
-            )
+            raise FileNotFoundError(f"未找到在线配置JSON: {config_dir}")
+
         if len(json_files) > 1:
-            raise RuntimeError(
-                f"zip_online_config_json 中存在多个JSON文件: {json_files}"
-            )
+            raise RuntimeError(f"zip_online_config_json 中存在多个JSON文件: {json_files}")
+
         return json_files[0]
 
     def _update_online_file(self, file_list, online_path, local_path):
@@ -1024,15 +957,13 @@ class WindowsBuilder(BaseBuilder):
             "/BlueArchive_Data/resources.assets": self.data_path / "resources.assets",
             "/BlueArchive_Data/resources.assets.resS": self.data_path / "resources.assets.resS",
         }
+
         for online_path, local_path in resources.items():
-            self._update_online_file(
-                file_list,
-                online_path,
-                local_path,
-            )
+            self._update_online_file(file_list, online_path, local_path)
 
     def _update_replace_config(self, file_list):
         replace_dir = self.repo / "Replace"
+
         if not replace_dir.exists():
             print("未找到Replace目录，跳过Windows额外资源。")
             return
@@ -1042,60 +973,50 @@ class WindowsBuilder(BaseBuilder):
             path for path in replace_dir.rglob("*")
             if path.is_file()
         ):
+
             relative_path = local_path.relative_to(replace_dir).as_posix()
+
             online_path = (
                 "/BlueArchive_Data/StreamingAssets/"
                 f"{relative_path}"
             )
-            self._update_online_file(
-                file_list,
-                online_path,
-                local_path,
-            )
+
+            self._update_online_file(file_list, online_path, local_path)
 
     def modify_online_config(self):
         """修改 Launcher 的在线资源配置。"""
         json_path = self._get_online_config()
         print(f"正在修改Windows在线配置: {json_path}")
 
-        data = json.loads(
-            json_path.read_text(encoding="utf-8")
-        )
+        data = json.loads(json_path.read_text(encoding="utf-8"))
         file_list = data.get("file")
+
         if not isinstance(file_list, list):
             raise ValueError("在线配置JSON中的file不是数组")
 
         self._update_resource_config(file_list)
         self._update_replace_config(file_list)
 
-        json_path.write_text(
-            json.dumps(
-                data,
-                ensure_ascii=False,
-                indent=4,
-            ) + "\n",
-            encoding="utf-8",
-        )
+        json_path.write_text(json.dumps(data, ensure_ascii=False, indent=4) + "\n", encoding="utf-8")
         print("Windows在线配置修改完成。")
         return json_path
 
     def rebuild(self):
         """Windows 不需要重新打包，只需确认资源存在。"""
         print("正在检查Windows资源。")
+
         if not self.data_path.exists():
-            raise FileNotFoundError(
-                f"未找到Windows资源目录: {self.data_path}"
-            )
+            raise FileNotFoundError(f"未找到Windows资源目录: {self.data_path}")
 
         for file_name in [
             "resources.assets",
             "resources.assets.resS",
         ]:
+
             file_path = self.data_path / file_name
+
             if not file_path.exists():
-                raise FileNotFoundError(
-                    f"未找到Windows资源: {file_path}"
-                )
+                raise FileNotFoundError(f"未找到Windows资源: {file_path}")
 
         print(f"Windows资源准备完成: {self.data_path}")
 
@@ -1103,32 +1024,23 @@ class WindowsBuilder(BaseBuilder):
         resource_version = os.environ["ResourceVersion"]
         latest_version = os.environ["LatestVersion"]
 
-        remote_directory = (
-            f"/var/www/launcher_download/{resource_version}"
-        )
-        config_directory = (
-            "/var/www/launcher_download/zip_online_config_json"
-        )
+        remote_directory = f"/var/www/launcher_download/{resource_version}"
+        config_directory = "/var/www/launcher_download/zip_online_config_json"
 
-        self._ensure_remote_directory(
-            ssh_server,
-            remote_directory,
-        )
-        self._ensure_remote_directory(
-            ssh_server,
-            config_directory,
-        )
+        self._ensure_remote_directory(ssh_server, remote_directory)
+        self._ensure_remote_directory(ssh_server, config_directory)
 
         print("开始上传Windows客户端资源。")
+
         for file_name in [
             "resources.assets",
             "resources.assets.resS",
         ]:
+
             local_path = self.data_path / file_name
+
             if not local_path.exists():
-                raise FileNotFoundError(
-                    f"未找到Windows资源: {local_path}"
-                )
+                raise FileNotFoundError(f"未找到Windows资源: {local_path}")
 
             ssh_server.upload_file(
                 str(local_path),
@@ -1143,6 +1055,7 @@ class WindowsBuilder(BaseBuilder):
             f"{config_directory}/{json_path.name}",
             create_parent=False,
         )
+
         print(f"上传完成: {json_path.name}")
         print("Windows客户端资源上传完成。")
 
@@ -1156,20 +1069,12 @@ class WindowsBuilder(BaseBuilder):
             "Windows_Resource",
             {
                 "resourceVersion": latest_version,
-                "resourceUpdateTime": datetime.now(
-                    ZoneInfo("Asia/Shanghai")
-                ).strftime("%Y-%m-%d %H:%M:%S"),
+                "resourceUpdateTime": datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S"),
             },
         )
         print("KV更新成功")
 
-    def run(
-        self,
-        sdkurl="",
-        gamemainconfig="",
-        modifybundle=True,
-        upload=False,
-    ):
+    def run(self, sdkurl="", gamemainconfig="", modifybundle=True, upload=False):
         try:
             self.prepare()
 

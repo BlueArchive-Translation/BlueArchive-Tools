@@ -6,6 +6,7 @@ import re
 import time
 import hashlib
 from dotenv import load_dotenv
+
 from utils.encryption import create_key, convert_string
 from utils.console import notice
 from utils.config import Config
@@ -13,6 +14,7 @@ from utils.util import ZipUtils, FileUtils, AsarUtils, CommandUtils, FileDownloa
 from xtractor.bundle import BundleExtractor
 
 class Server:
+    """ 由于该代码写于3月，是未重置代码，时间久远，因此闲的非常石山。如果有小伙伴能帮我改一下结构适配，改成3服兼容就好了…… """
     def __init__(self, server):
         self.server = server
         self.config = Config.servers.get(server, {})
@@ -115,7 +117,6 @@ class Server:
             results = response.json().get("results", [])
             apk_url = None
             version = results[0].get("version")
-
         return apk_url, version
 
     def get_game_main_config(self, files_path) -> str:
@@ -239,8 +240,10 @@ class Server:
             "time": int(time.time()),
             "version": version,
         }
+
         sign_str = f"{json.dumps(head, separators=(',', ':'), ensure_ascii=False)}{data or ''}DE7108E9B2842FD460F4777702727869"
         sign = hashlib.md5(sign_str.encode("utf-8")).hexdigest()
+
         return json.dumps({
             "head": head,
             "sign": sign,
