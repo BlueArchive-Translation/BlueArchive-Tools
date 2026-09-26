@@ -1,0 +1,84 @@
+name: 提取资源
+
+on:
+  workflow_dispatch:
+    inputs:
+      server:
+        description: 选择服务器
+        required: true
+        type: choice
+        options:
+          - JP
+          - GL
+          - CN
+      type:
+        description: 选择类型
+        required: true
+        type: choice
+        options:
+          - Table
+          - Media
+          - Bundle
+  repository_dispatch:
+    types: [Extract]
+
+permissions:
+  contents: write
+  actions: write
+
+env:
+  PYTHONUTF8: 1
+  PYTHONUNBUFFERED: "1"
+  CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+  CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+  SERVER_HOST: ${{ secrets.SERVER_HOST }}
+  SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
+  EMAIL_USERNAME: ${{ secrets.EMAIL_USERNAME }}
+  EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+  TARGET_EMAIL: ${{ secrets.TARGET_EMAIL }}
+  GH_TOKEN: ${{ secrets.UPDATE_TOKEN }}
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: 设置 .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0'
+
+      - name: 设置 Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: 安装 SSH 密钥
+        uses: shimataro/ssh-key-action@v2
+        with:
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          known_hosts: unnecessary
+          if_key_exists: replace
+
+      - name: 配置 Git 登录信息
+        run: |
+          git config --global user.email "actions@github.com"
+          git config --global user.name "GitHub Actions"
+
+      - name: 安装依赖
+        run: |
+          pip install -r requirements.txt
+
+      - name: 运行提取
+        shell: bash
+        env:
+          SERVER: ${{ github.event.inputs.server || github.event.client_payload.server }}
+          TYPE: ${{ github.event.inputs.type || github.event.client_payload.type }}
+        run: |
+          python process.py "$SERVER" "$TYPE" Extract
+

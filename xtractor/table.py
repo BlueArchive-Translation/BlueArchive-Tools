@@ -530,7 +530,7 @@ class TableTask:
 
         print(f"等待超时，触发 {self.dispatch_type}。")
 
-        Git().dispatch(self.dispatch_type, {"type": "Table"})
+        Git().dispatch(self.dispatch_type, {"server": self.server, "type": "Table"})
 
         print("检查结束，程序退出。")
         return False

@@ -9,14 +9,19 @@ class Config:
         "BlueArchive-Tools-CLI/releases/latest/download/"
         "BlueArchiveTools.{platform_id}.zip"
     )
+
     env_file = "config/{server}.env"
+    bundle_config="./config/bundle.json"
+
     FlatData = "FlatData"
     FlatData_path = "./FlatData"
+
     FlatData_repositories = "git@github.com:beichen23333/BA-FlatData.git"
     PC_repositories = "git@github.com:BlueArchive-Translation/BA-PC.git"
     APK_repositories = "https://github.com/BlueArchive-Translation/BA-APKSRC.git"
     API_repositories = "git@github.com:BlueArchive-Translation/BlueArchive-API.git"
     TableBundles_repositories = "git@github.com:beichen23333/BA-TableBundles.git"
+    Bundle_repositories_JP = "git@github.com:beichen23333/BA-Bundles-Extract-JP.git"
 
     servers = {
         "JP": {
