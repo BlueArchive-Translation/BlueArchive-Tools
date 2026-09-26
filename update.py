@@ -14,7 +14,7 @@ from utils.config import Config
 from utils.util import FileUtils, IL2CppDumper, ZipUtils
 from utils.cloudflare import CF
 from utils.git import Git
-from build.build_update import BuildUpdater
+from build.build_update import AndroidBuilder, IOSBuilder, WindowsBuilder
 
 
 class Updater:
@@ -377,25 +377,40 @@ class Updater:
             print("未找到BA-APKSRC目录，开始克隆仓库。")
             self.git.clone(Config.APK_repositories, apk_src_dir)
 
-        updater = BuildUpdater(
-            repo=apk_src_dir,
-            server=self.server_name,
-            workers=1
-        )
-
-        updater.run(
-            sdkurl="https://jp-sdk-api.bluearchive.help/",
-            gamemainconfig=json.dumps(
-                {"ServerInfoDataUrl": modified_url},
-                separators=(",", ":")
-            ),
-            trustcert=True,
-            modifylogin=True,
-            modifygt4="zho",
-            replace=True,
-            modifybundle=True,
-            upload=True
-        )
+        if self.server_name == "JP"
+            AndroidBuilder(repo=apk_src_dir, server=self.server_name, workers=1).run(
+                sdkurl="https://jp-sdk-api.bluearchive.help/",
+                gamemainconfig=json.dumps(
+                    {"ServerInfoDataUrl": modified_url},
+                    separators=(",", ":")
+                ),
+                trustcert=True,
+                modifylogin=True,
+                modifygt4="zho",
+                replace=True,
+                modifybundle=True,
+                upload=True
+            )
+        elif self.server_name == "JPiOS"
+            IOSBuilder(repo=apk_src_dir, server=self.server_name, workers=1).run(
+                sdkurl="https://jp-sdk-api.bluearchive.help/",
+                gamemainconfig=json.dumps(
+                    {"ServerInfoDataUrl": modified_url},
+                    separators=(",", ":")
+                ),
+                modifybundle=True,
+                upload=True
+            )
+        elif self.server_name == "JPPC"
+            WindowsBuilder(repo=apk_src_dir, server=self.server_name, workers=1).run(
+                sdkurl="https://jp-sdk-api.bluearchive.help/",
+                gamemainconfig=json.dumps(
+                    {"ServerInfoDataUrl": modified_url},
+                    separators=(",", ":")
+                ),
+                modifybundle=True,
+                upload=True
+            )
 
     def process_update(self):
         self.commit_config()
