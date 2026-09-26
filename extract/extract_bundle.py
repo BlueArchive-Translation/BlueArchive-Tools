@@ -147,11 +147,9 @@ class BundlePublisher:
         output = os.path.join(output_root, name)
         textassets = self.scan_bundle(self.extractor, bundle_path, "TextAsset")
         textures = self.scan_bundle(self.extractor, bundle_path, "Texture2D")
-        if textassets:
-            self.extract_bundle_type(self.extractor, bundle_path, os.path.join(output, "TextAsset"), "TextAsset")
-        if textures:
-            self.extract_bundle_type(self.extractor, bundle_path, os.path.join(output, "Texture2D"), "Texture2D")
         if textassets or textures:
+            self.extract_bundle_type(self.extractor, bundle_path, output, "TextAsset")
+            self.extract_bundle_type(self.extractor, bundle_path, output, "Texture2D")
             self.flatten_spine_output(output)
             self.upload_spine_output(output, spine_type_value, name)
         return textassets, textures
@@ -160,7 +158,7 @@ class BundlePublisher:
         """提取Texture2D"""
         zip_stem = os.path.splitext(os.path.basename(zip_name))[0]
         bundle_stem = os.path.splitext(os.path.basename(bundle_name))[0]
-        output = os.path.join(output_root, zip_stem, bundle_stem, "Texture2D")
+        output = os.path.join(output_root, zip_stem, bundle_stem)
         self.extract_bundle_type(self.extractor, bundle_path, output, "Texture2D")
 
     @staticmethod
