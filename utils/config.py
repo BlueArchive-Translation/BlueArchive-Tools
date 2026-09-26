@@ -14,7 +14,6 @@ class Config:
     bundle_config="./config/bundle.json"
 
     FlatData = "FlatData"
-    FlatData_path = "./FlatData"
 
     FlatData_repositories = "git@github.com:beichen23333/BA-FlatData.git"
     PC_repositories = "git@github.com:BlueArchive-Translation/BA-PC.git"

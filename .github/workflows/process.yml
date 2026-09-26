@@ -37,7 +37,8 @@ env:
   EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
   TARGET_EMAIL: ${{ secrets.TARGET_EMAIL }}
   GH_TOKEN: ${{ secrets.UPDATE_TOKEN }}
-
+  UPDATE_TOKEN: ${{ secrets.UPDATE_TOKEN }}
+  GITHUB_REPOSITORY: ${{ github.repository }}
 jobs:
   extract:
     runs-on: ubuntu-latest

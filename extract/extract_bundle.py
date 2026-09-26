@@ -284,6 +284,7 @@ class BundlePublisher:
             print(f"[Git] 最终提交 {self.git_state['pending']} 个新增图片")
 
         project_git = Git(os.getcwd())
+        project_git.pull()
         project_git.add(Config.bundle_config)
         if project_git.has_staged_changes():
             project_git.commit("Update bundle config")

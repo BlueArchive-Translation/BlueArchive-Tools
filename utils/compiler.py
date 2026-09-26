@@ -384,6 +384,10 @@ class CSParser:
                     counter += 1
                 
                 members.append(EnumMember(m_name, m_value))
+
+            if not members:
+                notice(f"Skip empty enum: {name}")
+                continue
             
             enums.append(EnumType(name, "int", members))
         return enums

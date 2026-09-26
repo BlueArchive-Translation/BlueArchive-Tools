@@ -448,9 +448,9 @@ class TableTask:
     def prepare_flatdata(self):
         print("正在克隆 FlatData 仓库...")
 
-        Git().clone(Config.FlatData_repositories, Config.FlatData_path)
+        Git().clone(Config.FlatData_repositories, Config.FlatData)
 
-        git = Git(Config.FlatData_path)
+        git = Git(Config.FlatData)
         git.checkout(self.server)
 
         print(f"FlatData 已切换到 {self.server} 分支。")
