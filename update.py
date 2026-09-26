@@ -20,7 +20,6 @@ from build.build_update import AndroidBuilder, IOSBuilder, WindowsBuilder
 class Updater:
     def __init__(self, server_name):
         self.server_name = server_name
-        self.mail = GmailSMTP()
         self.server = Server(server_name)
         self.git = Git()
         self.major = False
@@ -233,13 +232,6 @@ class Updater:
 
         print("Git配置提交完成。")
 
-    def send_update_notice(self):
-        if os.getenv("GITHUB_RUN_ID"):
-            self.mail.send_update_notice(
-                server_name=self.server_name,
-                run_id=os.getenv("GITHUB_RUN_ID")
-            )
-
     def upload_flatdata(self):
         if self.server_name not in ("JP", "GL", "CN"):
             return
@@ -414,7 +406,6 @@ class Updater:
 
     def process_update(self):
         self.commit_config()
-        self.send_update_notice()
 
         if self.major and self.server_name in ("JP", "GL", "CN"):
             self.upload_flatdata()

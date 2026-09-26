@@ -79,6 +79,7 @@ jobs:
         env:
           SERVER: ${{ github.event.inputs.server || github.event.client_payload.server }}
           TYPE: ${{ github.event.inputs.type || github.event.client_payload.type }}
+          YostarToken: ${{ secrets.YostarToken }}
         run: |
           python process.py "$SERVER" "$TYPE" Extract
 

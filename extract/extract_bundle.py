@@ -243,6 +243,7 @@ class BundlePublisher:
                     self.git_state["git"].add(".")
                     if self.git_state["git"].has_staged_changes():
                         self.git_state["git"].commit(f"Update resources ({self.git_state['pending']} images)")
+                        self.git_state["git"].push()
                         print(f"[Git] 提交 {self.git_state['pending']} 个新增图片")
                     self.git_state["pending"] = 0
             print(f"[ZIP] 完成：{pack_name}")
