@@ -1,4 +1,4 @@
-name: 提取资源
+name: 处理资源
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ on:
           - GL
           - CN
       type:
-        description: 选择类型
+        description: 选择资源类型
         required: true
         type: choice
         options:
@@ -20,7 +20,7 @@ on:
           - Media
           - Bundle
   repository_dispatch:
-    types: [Extract]
+    types: [Extract, Repack]
 
 permissions:
   contents: write

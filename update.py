@@ -377,7 +377,7 @@ class Updater:
             print("未找到BA-APKSRC目录，开始克隆仓库。")
             self.git.clone(Config.APK_repositories, apk_src_dir)
 
-        if self.server_name == "JP"
+        if self.server_name == "JP":
             AndroidBuilder(repo=apk_src_dir, server=self.server_name, workers=1).run(
                 sdkurl="https://jp-sdk-api.bluearchive.help/",
                 gamemainconfig=json.dumps(
@@ -391,7 +391,7 @@ class Updater:
                 modifybundle=True,
                 upload=True
             )
-        elif self.server_name == "JPiOS"
+        elif self.server_name == "JPiOS":
             IOSBuilder(repo=apk_src_dir, server=self.server_name, workers=1).run(
                 sdkurl="https://jp-sdk-api.bluearchive.help/",
                 gamemainconfig=json.dumps(
@@ -401,7 +401,7 @@ class Updater:
                 modifybundle=True,
                 upload=True
             )
-        elif self.server_name == "JPPC"
+        elif self.server_name == "JPPC":
             WindowsBuilder(repo=apk_src_dir, server=self.server_name, workers=1).run(
                 sdkurl="https://jp-sdk-api.bluearchive.help/",
                 gamemainconfig=json.dumps(
