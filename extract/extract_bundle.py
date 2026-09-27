@@ -281,6 +281,7 @@ class BundlePublisher:
         self.git_state["git"].add(".")
         if self.git_state["git"].has_staged_changes():
             self.git_state["git"].commit(f"Update resources ({self.git_state['pending']} images)")
+            self.git_state["git"].push()
             print(f"[Git] 最终提交 {self.git_state['pending']} 个新增图片")
 
         project_git = Git(os.getcwd())
@@ -288,6 +289,7 @@ class BundlePublisher:
         project_git.add(Config.bundle_config)
         if project_git.has_staged_changes():
             project_git.commit("Update bundle config")
+            project_git.push()
             print(f"[Git] 已提交 BundleConfig：{Config.bundle_config}")
 
     def cleanup(self):
