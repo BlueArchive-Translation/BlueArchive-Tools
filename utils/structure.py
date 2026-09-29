@@ -209,7 +209,7 @@ class Property:
 class StructTable:
     name: str
     properties: list[Property]
-
+    source: str = "Excel"
 
 @dataclass
 class EnumMember:

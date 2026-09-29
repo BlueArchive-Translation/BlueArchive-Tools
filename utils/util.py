@@ -737,7 +737,7 @@ class IL2CppDumper(ToolManager):
         enums = parser.parse_enum()
         structs = parser.parse_struct()
 
-        print("Generating flatbuffer python dump files...")
+        print(f"Parsed {len(enums)} enums, {len(structs)} structs")
 
         compiler = CompileToPython(
             enums,
@@ -746,7 +746,10 @@ class IL2CppDumper(ToolManager):
         )
 
         compiler.create_enum_files()
-        compiler.create_struct_files()
+        compiler.create_fbs_file()
+        compiler.compile_fbs()
         compiler.create_module_file()
         compiler.create_dump_dict_file()
         compiler.create_repack_dict_file()
+
+        print("Done！")

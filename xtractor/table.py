@@ -41,6 +41,7 @@ class TableProcess:
         self.flat_data_module_name = flat_data_module_name
 
         self.lower_fb_name_modules: dict[str, type] = {}
+        self.lower_fb_name_modules_db: dict[str, type] = {}
         self.dump_wrapper_lib: ModuleType
         self.repack_wrapper_lib: ModuleType
 
@@ -49,6 +50,12 @@ class TableProcess:
     def __import_modules(self):
         try:
             flat_data_lib = importlib.import_module(self.flat_data_module_name)
+            excel_lib = importlib.import_module(
+                f"{self.flat_data_module_name}.Excel"
+            )
+            excel_db_lib = importlib.import_module(
+                f"{self.flat_data_module_name}.ExcelDB"
+            )
             self.dump_wrapper_lib = importlib.import_module(
                 f"{self.flat_data_module_name}.dump_wrapper"
             )
@@ -57,7 +64,13 @@ class TableProcess:
             )
             self.lower_fb_name_modules = {
                 t_name.lower(): t_class
-                for t_name, t_class in flat_data_lib.__dict__.items()
+                for t_name, t_class in excel_lib.__dict__.items()
+                if isinstance(t_class, type)
+            }
+            self.lower_fb_name_modules_db = {
+                t_name.lower(): t_class
+                for t_name, t_class in excel_db_lib.__dict__.items()
+                if isinstance(t_class, type)
             }
         except Exception as e:
             notice(
@@ -66,22 +79,26 @@ class TableProcess:
             )
 
     def _process_bytes_file(
-        self, file_name: str, data: bytes
+        self, file_name: str, data: bytes, source: str = "Excel"
     ) -> tuple[dict[str, Any], str]:
         """Extract flatbuffer bytes file to dict
 
         Args:
             file_name (str): Schema name of data.
             data (bytes): Flatbuffer data to extract.
-
-        Returns:
-            tuple[dict[str, Any], str]: Tuple with extracted dict and file name. Always have file name if success extract.
+            source (str): FlatData source.
         """
+        modules = (
+            self.lower_fb_name_modules_db
+            if source == "ExcelDB"
+            else self.lower_fb_name_modules
+        )
         if not (
-            flatbuffer_class := self.lower_fb_name_modules.get(
+            flatbuffer_class := modules.get(
                 file_name.removesuffix(".bytes").lower(), None
             )
         ):
+            notice(f"[FlatBuffer] Cannot find class for {file_name}", "error")
             return {}, ""
 
         obj = None
@@ -92,33 +109,45 @@ class TableProcess:
                         data = xor_with_key(flatbuffer_class.__name__, data)
                     flat_buffer = getattr(flatbuffer_class, "GetRootAs")(data)
                     obj = getattr(self.dump_wrapper_lib, "dump_table")(flat_buffer)
-                except:
-                    pass
+                except Exception as e:
+                    notice(
+                        f"[FlatBuffer] dump_table failed: {file_name}\n"
+                        f"  Error: {type(e).__name__}: {e}",
+                        "error",
+                    )
 
             if not obj:
                 flat_buffer = getattr(flatbuffer_class, "GetRootAs")(data)
                 obj = getattr(
-                    self.dump_wrapper_lib, f"dump_{flatbuffer_class.__name__}"
+                    self.dump_wrapper_lib,
+                    f"dump_{source}_{flatbuffer_class.__name__}",
                 )(flat_buffer)
-            return (obj, f"{flatbuffer_class.__name__}.json")
-        except:
+            return obj, f"{flatbuffer_class.__name__}.json"
+        except Exception as e:
+            notice(
+                f"[FlatBuffer] Failed to process {file_name}\n"
+                f"  Error: {type(e).__name__}: {e}",
+                "error",
+            )
             return {}, ""
 
     def _repack_bytes_file(
-        self, file_name: str, json_data: Union[dict, list], encrypt: bool = True, xor_encrypt: bool = True
+        self, file_name: str, json_data: Union[dict, list], encrypt: bool = True, xor_encrypt: bool = True, source: str = "Excel"
     ) -> tuple[bytes, str]:
         """Repack dict to encrypted flatbuffer bytes
 
         Args:
             file_name (str): File name of json.
             json_data (dict | list): Content to repack.
-
-        Returns:
-            tuple[bytes, str]: Tuple with encrypted bytes and original bytes file name.
         """
         base_name = file_name.removesuffix(".json").lower()
+        modules = (
+            self.lower_fb_name_modules_db
+            if source == "ExcelDB"
+            else self.lower_fb_name_modules
+        )
         if not (
-            flatbuffer_class := self.lower_fb_name_modules.get(base_name, None)
+            flatbuffer_class := modules.get(base_name, None)
         ):
             return b"", ""
 
@@ -127,7 +156,7 @@ class TableProcess:
             # 先使用pack_{class_name} 进行序列化（序列化后需要进行xor字段加密，repack_wrapper已写应对方式），xor密钥为字段名
             # 随后进行xor加密（密钥为FlatData表名）
             class_name = flatbuffer_class.__name__
-            pack_func_name = f"pack_{class_name}"
+            pack_func_name = f"pack_{source}_{class_name}"
             pack_func = getattr(self.repack_wrapper_lib, pack_func_name, None)
 
             if not pack_func:
@@ -141,7 +170,7 @@ class TableProcess:
             # 与解压同流程加密
             if not (file_name.endswith(".bytes") and self.server == "CN") and xor_encrypt:
                 bytes_output = xor_with_key(class_name, bytes_output)
-
+            
             return bytes_output, f"{base_name}.bytes"
         except:
             return b"", ""
@@ -187,7 +216,7 @@ class TableProcess:
                         col_type = SQLiteDataType[col.data_type].value
                         if col_type == bytes:
                             data, _ = self._process_bytes_file(
-                                table.replace("DBSchema", "Excel"), value
+                                table.replace("DBSchema", "Excel"), value, "ExcelDB"
                             )
                             row_data.append(data)
                         elif col_type == bool:
@@ -212,13 +241,20 @@ class TableProcess:
             return data, "", True
 
         if detect_type or file_name.endswith(".bytes"):
-            b_data = self._process_bytes_file(file_name, file_data)
-            file_dict, file_name = b_data
-            if file_name:
-                return (
-                    json.dumps(file_dict, indent=4, ensure_ascii=False).encode("utf8"),
-                    file_name,
-                    True,
+            try:
+                b_data = self._process_bytes_file(file_name, file_data, "Excel")
+                file_dict, file_name = b_data
+                if file_name:
+                    return (
+                        json.dumps(file_dict, indent=4, ensure_ascii=False).encode("utf8"),
+                        file_name,
+                        True,
+                    )
+            except Exception as e:
+                notice(
+                    f"[ZIP] Failed to process {file_name}\n"
+                    f"  Error: {type(e).__name__}: {e}",
+                    "error",
                 )
         return data, "", False
 
@@ -301,7 +337,7 @@ class TableRepack(TableProcess):
         """Repack JSON files back to original zip file."""
         try:
             zip_path = path.join(self.table_file_folder, file_name)
-            password = zip_password(path.basename(file_name)) if Config.server != "CN" else None
+            password = zip_password(path.basename(file_name)) if self.server != "CN" else None
 
             # 解压到临时目录，extract_zip_file不是我写的懒得改
             os.makedirs("Temp", exist_ok=True)
@@ -319,7 +355,9 @@ class TableRepack(TableProcess):
                         with open(path.join(root, file), 'r', encoding='utf8') as f:
                             json_data = json.load(f)
 
-                        item_data, new_name = self._repack_bytes_file(file, json_data, False)
+                        item_data, new_name = self._repack_bytes_file(
+                            file, json_data, False, True, "Excel"
+                        )
 
                         if new_name:
                             # 将修改后的数据写回临时目录以备重新打包
@@ -371,7 +409,9 @@ class TableRepack(TableProcess):
                         row = []
                         for col in columns:
                             if col.name == "Bytes":
-                                byte_data, _ = self._repack_bytes_file(file, item, False, False)
+                                byte_data, _ = self._repack_bytes_file(
+                                    file, item, False, False, "ExcelDB"
+                                )
                                 row.append(byte_data)
                             else:
                                 row.append(item.get(col.name))
@@ -536,7 +576,7 @@ class TableTask:
         return False
 
     def prepare_table(self):
-        self.prepare_flatdata()
+#        self.prepare_flatdata()
 
         return TableExtract(
             server=self.server,

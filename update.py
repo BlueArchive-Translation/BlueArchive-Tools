@@ -268,6 +268,15 @@ class Updater:
         flatdata_git.checkout(self.server_name)
         flatdata_git.pull(self.server_name)
 
+        for item in os.listdir(flatdata_dir):
+            if item == ".git":
+                continue
+            path = os.path.join(flatdata_dir, item)
+            if os.path.isdir(path):
+                shutil.rmtree(path)
+            else:
+                os.remove(path)
+
         flatdata_source = os.path.abspath("FlatData")
 
         for item in os.listdir(flatdata_source):
