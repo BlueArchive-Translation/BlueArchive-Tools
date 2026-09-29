@@ -8,34 +8,21 @@ import struct
 import subprocess
 import tempfile
 import platform
-
 import io
+import shutil
+from os import path
+from typing import Any, List, Optional, Union, Dict
+
 from crcmanip.crc import CRC32
 from crcmanip.algorithm import apply_patch, consume
-
-from os import path
-from typing import Any, Literal, List, Optional, Union, Dict
-
 from PIL import Image
 from utils.console import ProgressBar
 from utils.util import ZipUtils, ToolManager, FileDownloader
 
+
 def build_asset_index(extractor: "BundleExtractor", folder_path: str) -> Dict[str, List[dict]]:
     """
-    一次性扫描文件夹，建立 ``{asset_name: [match_info, ...]}`` 的索引缓存。
-
-    复用 ``BundleExtractor.search_unity_pack`` 的逐文件 ``uabea list -f`` 扫描
-    机制（collect_only 模式，不导出资源内容），保证能正确解析到资源名并收集
-    每个资源所在的 bundle 文件。之后对 bundle 资源进行修改时直接查表索引，
-    无需对每个资源重复扫描整个目录。
-
-    Args:
-        extractor: BundleExtractor 实例（用于执行 uabea list）。
-        folder_path: 需要扫描的 bundle 数据目录。
-
-    Returns:
-        dict: 键为资源名，值为该资源名对应的 match 信息列表
-              （每个元素含 source_path / entry / path_id / type / name / size）。
+    一次性扫描文件夹，建立 {asset_name: [match_info, ...]} 索引。
     """
     index: Dict[str, List[dict]] = {}
     extractor.search_unity_pack(folder_path, collect_index=index, collect_only=True)
@@ -44,19 +31,16 @@ def build_asset_index(extractor: "BundleExtractor", folder_path: str) -> Dict[st
 
 def _bundle_replace_worker(task: tuple) -> tuple:
     """
-    多进程 worker：将单个资源文件替换进对应的 bundle 文件并修补 CRC。
-
-    必须为模块级函数以便能在 ``multiprocessing.Pool`` 中被序列化。
-    每个 worker 复用主进程解析好的工具路径（``bin_path``），避免重复初始化。
+    多进程 worker：将单个资源文件替换进对应 bundle 文件并修补 CRC。
     """
     bin_path, target_filepath, match, asset_name, file_path, crc_fix = task
     try:
         ext = BundleExtractor()
         ext.bin_path = bin_path
         ext._import_file_direct(target_filepath, match, asset_name, file_path, crc_fix)
-        return target_filepath, True
-    except Exception:
-        return target_filepath, False
+        return target_filepath, True, ""
+    except Exception as e:
+        return target_filepath, False, f"{type(e).__name__}: {e}"
 
 
 class BundleExtractor(ToolManager):
@@ -65,42 +49,67 @@ class BundleExtractor(ToolManager):
         "Mesh", "VideoClip", "MonoBehaviour", "Shader",
     ]
 
-    def __init__(self, install_dir: str = "tools", EXTRACT_DIR: str = "output") -> None:
+    _EXPORT_FORMAT = {
+        "Texture2D": "png",
+        "Sprite": "png",
+        "AudioClip": "wav",
+        "TextAsset": "txt",
+        "Font": "raw",
+        "VideoClip": "raw",
+        "Mesh": "raw",
+        "MonoBehaviour": "json",
+        "Shader": "raw",
+    }
+
+    def __init__(self, install_dir: str = "tools") -> None:
         super().__init__(install_dir)
         self.bin_path = self.ensure_tool()
-        self.BUNDLE_EXTRACT_FOLDER = EXTRACT_DIR
         self.install_dir = install_dir
+
+    @staticmethod
+    def _print_error(message: str, exc: Optional[Exception] = None) -> None:
+        if exc is None:
+            print(f"[BundleExtractor][ERROR] {message}")
+        else:
+            print(f"[BundleExtractor][ERROR] {message}: {type(exc).__name__}: {exc}")
+
+    @staticmethod
+    def _print_warning(message: str) -> None:
+        print(f"[BundleExtractor][WARNING] {message}")
+
+    @staticmethod
+    def _print_info(message: str) -> None:
+        print(f"[BundleExtractor] {message}")
 
     def _run_uabea(self, args: List[str]) -> subprocess.CompletedProcess:
         """
-        执行 UABEAvalonia CLI 命令。
-        文件路径参数需用绝对路径传入（本函数内自动转换 -f/-d/-o/-i/-b/-a 后面跟的路径）。
-        cwd 保持为 UABEA 二进制目录，以确保 TexturePlugin.dll 等插件能被正确加载。
+        执行 UABEAvalonia CLI。
+        路径参数自动转换为绝对路径，并将 cwd 设置到 UABEA 所在目录。
         """
-        # 将路径参数自动转为绝对路径
         abs_args: List[str] = ["uabea"]
         path_flags = {"-f", "-d", "-o", "-i", "-b", "-a"}
         i = 0
         while i < len(args):
-            abs_args.append(args[i])
-            if args[i] in path_flags and i + 1 < len(args):
+            arg = args[i]
+            abs_args.append(arg)
+            if arg in path_flags and i + 1 < len(args):
                 i += 1
                 abs_args.append(os.path.abspath(args[i]))
             i += 1
-
         cmd = [self.bin_path] + abs_args
+        cwd = os.path.dirname(os.path.abspath(self.bin_path))
         try:
-            return subprocess.run(cmd, capture_output=True, text=True)
+            return subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
         except Exception as e:
+            self._print_error(f"执行 UABEA 失败，命令: {' '.join(cmd)}", e)
             return subprocess.CompletedProcess(cmd, returncode=-1, stdout="", stderr=str(e))
 
     @staticmethod
     def _parse_list_output(output: str) -> List[dict]:
-        """解析 ``UABEAvalonia list`` 的 stdout，返回资源描述 dict 列表。"""
+        """解析 UABEA list stdout。"""
         assets: List[dict] = []
         current_source = ""
         is_bundle = False
-
         for line in output.splitlines():
             s = line.strip()
             if s.startswith("Bundle:"):
@@ -118,18 +127,23 @@ class BundleExtractor(ToolManager):
                 int(cols[0])
             except (ValueError, IndexError):
                 continue
-
             if is_bundle and len(cols) >= 5:
                 assets.append({
-                    "path_id": cols[0], "entry": cols[1], "type": cols[2],
-                    "size": cols[3], "name": " ".join(cols[4:]),
+                    "path_id": cols[0],
+                    "entry": cols[1],
+                    "type": cols[2],
+                    "size": cols[3],
+                    "name": " ".join(cols[4:]),
                     "source_path": current_source,
                 })
             elif not is_bundle and len(cols) >= 4:
                 entry_name = os.path.basename(current_source) if current_source else ""
                 assets.append({
-                    "path_id": cols[0], "entry": entry_name, "type": cols[1],
-                    "size": cols[2], "name": " ".join(cols[3:]),
+                    "path_id": cols[0],
+                    "entry": entry_name,
+                    "type": cols[1],
+                    "size": cols[2],
+                    "name": " ".join(cols[3:]),
                     "source_path": current_source,
                 })
         return assets
@@ -144,15 +158,13 @@ class BundleExtractor(ToolManager):
                 self.m_Script = self._parse_textasset_raw(raw_bytes)
             else:
                 try:
-                    self.m_Script: str = raw_bytes.decode("utf-8") if raw_bytes else ""
+                    self.m_Script = raw_bytes.decode("utf-8") if raw_bytes else ""
                 except UnicodeDecodeError:
                     self.m_Script = raw_bytes if raw_bytes else b""
             self.bundleVersion: str = ""
 
         @staticmethod
         def _parse_textasset_raw(raw: bytes) -> Union[str, bytes]:
-            """从 UABEA raw 导出的 TextAsset 二进制中提取 m_Script 内容。"""
-            import struct
             try:
                 if len(raw) < 4:
                     return raw
@@ -175,7 +187,7 @@ class BundleExtractor(ToolManager):
                 return raw
 
     class _MockObj:
-        """模拟 UnityPy 对象，兼容 .read()、.source_path、.type.name 等访问。"""
+        """模拟 UnityPy 对象。"""
         class _Type:
             def __init__(self, name: str) -> None:
                 self.name = name
@@ -183,15 +195,16 @@ class BundleExtractor(ToolManager):
         def __init__(self, asset_info: dict, read_data: "BundleExtractor._MockReadData") -> None:
             self._info = asset_info
             self._read_data = read_data
-            self.source_path: str = asset_info.get("source_path", "")
-            self.path_id: str = asset_info.get("path_id", "")
+            self.source_path = asset_info.get("source_path", "")
+            self.path_id = asset_info.get("path_id", "")
             self.type = BundleExtractor._MockObj._Type(asset_info.get("type", ""))
 
         def read(self) -> "BundleExtractor._MockReadData":
             return self._read_data
 
     def search_unity_pack(
-        self, pack_path: str,
+        self,
+        pack_path: str,
         data_type: Optional[List[str]] = None,
         data_name: Optional[List[str]] = None,
         condition_connect: bool = False,
@@ -208,14 +221,18 @@ class BundleExtractor(ToolManager):
             try:
                 if os.path.getsize(file_path) < 20:
                     return result_list
-            except Exception:
+            except Exception as e:
+                self._print_warning(f"无法读取文件大小: {file_path}，{e}")
                 return result_list
-            # list 不带 -t：一次列出文件全部资源，以便 collect_index 能收到 TextAsset/Texture2D/Font 等所有类型。
             result = self._run_uabea(["list", "-f", file_path])
             if result.returncode != 0:
+                self._print_error(
+                    f"UABEA list 失败: {file_path}\n"
+                    f"stdout: {result.stdout.strip()}\n"
+                    f"stderr: {result.stderr.strip()}"
+                )
                 return result_list
             candidates = self._parse_list_output(result.stdout)
-            # 在类型/名称过滤之前，把全部资源累积进索引缓存
             if collect_index is not None:
                 for info in candidates:
                     info.setdefault("source_path", file_path)
@@ -248,12 +265,22 @@ class BundleExtractor(ToolManager):
                                             with open(fpath, "rb") as fh:
                                                 raw_bytes = fh.read()
                                             break
-                        except Exception:
-                            raw_bytes = None
-                result_list.append(BundleExtractor._MockObj(
-                    info, BundleExtractor._MockReadData(info, raw_bytes)
-                ))
+                                else:
+                                    self._print_warning(
+                                        f"TextAsset 导出失败: {source_file} PathID={info['path_id']}\n"
+                                        f"stderr: {exp.stderr.strip()}"
+                                    )
+                        except Exception as e:
+                            self._print_error(f"读取 TextAsset 失败: {source_file}", e)
+                    result_list.append(BundleExtractor._MockObj(
+                        info, BundleExtractor._MockReadData(info, raw_bytes)
+                    ))
+                else:
+                    result_list.append(BundleExtractor._MockObj(
+                        info, BundleExtractor._MockReadData(info)
+                    ))
             return result_list
+
         if os.path.isdir(pack_path):
             data_list = []
             files = []
@@ -262,64 +289,61 @@ class BundleExtractor(ToolManager):
                     if filename.endswith(".resS"):
                         continue
                     files.append(os.path.join(root, filename))
-            print(f"[BundleExtractor] 扫描文件数量: {len(files)}")
+            self._print_info(f"扫描文件数量: {len(files)}")
             for file_path in files:
                 result = process_file(file_path)
                 if result:
-                    print(f"[BundleExtractor] 找到资源: {file_path} 数量:{len(result)}")
+                    self._print_info(f"找到资源: {file_path} 数量:{len(result)}")
                     data_list.extend(result)
             return data_list
         return process_file(pack_path)
 
-    def _patch_crc(self, filepath: str, original_crc_int: int) -> None:
+    def _patch_crc(self, filepath: str, original_crc_int: int) -> bool:
         """
-        通过在文件末尾追加 4 字节补丁，使文件整体 CRC 恢复到修改前的值。
-        包含详细 Debug 打印校验对比过程。
+        在文件末尾追加 CRC patch，使最终 CRC 恢复为原始 CRC。
         """
-        # [DEBUG] 1. 计算 UABEA 刚刚修改完后，现在的 CRC 是多少
-        codec_before = CRC32()
-        with open(filepath, "rb") as f:
-            consume(codec_before, f)
-        current_crc = codec_before.digest()
-        
-        print(f"\n[DEBUG CRC] 正在处理文件: {os.path.basename(filepath)}")
-        print(f"  --> 原文件目标 CRC (Expected) : 0x{original_crc_int:08X}")
-        print(f"  --> UABEA修改后 CRC (Current) : 0x{current_crc:08X}")
-
-        with open(filepath, "rb") as f:
-            data = f.read()
-        
-        input_io = io.BytesIO(data)
-        output_io = io.BytesIO()
-        file_size = len(data)
-
-        codec = CRC32()
-        # 计算并应用补丁，在当前文件末尾增加字节
-        apply_patch(
-            crc=codec,
-            target_checksum=original_crc_int,
-            input_handle=input_io,
-            output_handle=output_io,
-            target_pos=file_size,
-            overwrite=False
-        )
-
-        # 将修补后的数据写回原文件
-        patched_data = output_io.getvalue()
-        with open(filepath, "wb") as f:
-            f.write(patched_data)
-
-        # [DEBUG] 2. 验证写入 Patch 后的最终 CRC
-        codec_after = CRC32()
-        with open(filepath, "rb") as f:
-            consume(codec_after, f)
-        final_crc = codec_after.digest()
-        
-        print(f"  --> Patch附加后 CRC (Final)   : 0x{final_crc:08X}")
-        if final_crc == original_crc_int:
-            print("  --> [成功] CRC 修补校验匹配！\n")
-        else:
-            print("  --> [失败] 严重错误，CRC 修补不一致！\n")
+        try:
+            codec_before = CRC32()
+            with open(filepath, "rb") as f:
+                consume(codec_before, f)
+            current_crc = codec_before.digest()
+            self._print_info(
+                f"CRC 修补: {os.path.basename(filepath)} | "
+                f"Expected=0x{original_crc_int:08X} Current=0x{current_crc:08X}"
+            )
+            if current_crc == original_crc_int:
+                self._print_info("文件 CRC 未发生变化，无需 Patch")
+                return True
+            with open(filepath, "rb") as f:
+                data = f.read()
+            input_io = io.BytesIO(data)
+            output_io = io.BytesIO()
+            apply_patch(
+                crc=CRC32(),
+                target_checksum=original_crc_int,
+                input_handle=input_io,
+                output_handle=output_io,
+                target_pos=len(data),
+                overwrite=False,
+            )
+            patched_data = output_io.getvalue()
+            with open(filepath, "wb") as f:
+                f.write(patched_data)
+            codec_after = CRC32()
+            with open(filepath, "rb") as f:
+                consume(codec_after, f)
+            final_crc = codec_after.digest()
+            if final_crc != original_crc_int:
+                self._print_error(
+                    f"CRC Patch 失败: {filepath} "
+                    f"Expected=0x{original_crc_int:08X} Final=0x{final_crc:08X}"
+                )
+                return False
+            self._print_info(f"CRC Patch 成功: 0x{final_crc:08X}")
+            return True
+        except Exception as e:
+            self._print_error(f"CRC 修补失败: {filepath}", e)
+            return False
 
     @staticmethod
     def _new_data_to_file(
@@ -330,23 +354,13 @@ class BundleExtractor(ToolManager):
         path_id: str,
         tmp_dir: str,
     ) -> Optional[str]:
-        """
-        将 new_data 写入 tmp_dir，文件名符合 UABEA 导入规则：
-            {AssetName}-{entry}-{PathID}.{ext}
-        返回写入的完整路径；若类型不支持则返回 None（不回退UnityPy）。
-        """
         stem = f"{asset_name}-{entry}-{path_id}" if entry else f"{asset_name}-{path_id}"
-
         if obj_type == "TextAsset":
             fpath = path.join(tmp_dir, stem + ".txt")
-            if isinstance(new_data, str):
-                raw = new_data.encode("utf-8", "surrogateescape")
-            else:
-                raw = bytes(new_data)
+            raw = new_data.encode("utf-8", "surrogateescape") if isinstance(new_data, str) else bytes(new_data)
             with open(fpath, "wb") as f:
                 f.write(raw)
             return fpath
-
         if obj_type == "Texture2D":
             if isinstance(new_data, Image.Image):
                 fpath = path.join(tmp_dir, stem + ".png")
@@ -357,7 +371,6 @@ class BundleExtractor(ToolManager):
                 with open(fpath, "wb") as f:
                     f.write(bytes(new_data) if isinstance(new_data, list) else new_data)
                 return fpath
-
         if obj_type == "Font" and isinstance(new_data, (bytes, list)):
             raw = bytes(new_data) if isinstance(new_data, list) else new_data
             ext = ".otf" if raw[:4] == b"OTTO" else ".ttf"
@@ -365,61 +378,65 @@ class BundleExtractor(ToolManager):
             with open(fpath, "wb") as f:
                 f.write(raw)
             return fpath
-
         if obj_type == "VideoClip" and isinstance(new_data, (bytes, list)):
             fpath = path.join(tmp_dir, stem + ".dat")
             with open(fpath, "wb") as f:
                 f.write(bytes(new_data) if isinstance(new_data, list) else new_data)
             return fpath
-
         if obj_type == "MonoBehaviour" and isinstance(new_data, dict):
             fpath = path.join(tmp_dir, stem + ".json")
             with open(fpath, "wt", encoding="utf-8") as f:
                 json.dump(new_data, f, ensure_ascii=False, indent=2)
             return fpath
-
-        # AudioClip 等暂不支持，返回 None
         return None
 
-    def modify_and_replace(self, folder_path: str, asset_name: str, new_data: Any, asset_index: Optional[Dict[str, List[dict]]] = None) -> None:
-        if os.path.isdir(folder_path):
-            if asset_index is not None:
-                all_matches = [
-                    m for m in asset_index.get(asset_name, [])
-                    if m.get("source_path")
-                ]
-            else:
-                list_result = self._run_uabea([
-                    "list", "-d", folder_path, "-n", f"={asset_name}", "--recursive",
-                ])
-                if list_result.returncode != 0:
+    def modify_and_replace(
+        self,
+        folder_path: str,
+        asset_name: str,
+        new_data: Any,
+        asset_index: Optional[Dict[str, List[dict]]] = None,
+        crc_fix: bool = True,
+    ) -> None:
+        try:
+            if os.path.isdir(folder_path):
+                if asset_index is not None:
+                    all_matches = [m for m in asset_index.get(asset_name, []) if m.get("source_path")]
+                else:
+                    list_result = self._run_uabea([
+                        "list", "-d", folder_path, "-n", f"={asset_name}", "--recursive",
+                    ])
+                    if list_result.returncode != 0:
+                        self._print_error(
+                            f"扫描资源失败: {folder_path}\n"
+                            f"stderr: {list_result.stderr.strip()}"
+                        )
+                        return
+                    all_matches = [m for m in self._parse_list_output(list_result.stdout) if m["name"] == asset_name]
+                if not all_matches:
+                    self._print_warning(f"未找到资源: {asset_name}")
                     return
-                all_matches = [
-                    m for m in self._parse_list_output(list_result.stdout)
-                    if m["name"] == asset_name
-                ]
-            if not all_matches:
+                seen_files = set()
+                for match in all_matches:
+                    filepath = match.get("source_path", "")
+                    if filepath and filepath not in seen_files:
+                        seen_files.add(filepath)
+                        self._import_single_asset(filepath, match, asset_name, new_data, crc_fix)
                 return
-            # 按文件去重，每个文件只处理第一个匹配
-            seen_files: set = set()
-            for match in all_matches:
-                filepath = match.get("source_path", "")
-                if filepath and filepath not in seen_files:
-                    seen_files.add(filepath)
-                    self._import_single_asset(filepath, match, asset_name, new_data)
-        else:
-            list_result = self._run_uabea([
-                "list", "-f", folder_path, "-n", f"={asset_name}",
-            ])
+            list_result = self._run_uabea(["list", "-f", folder_path, "-n", f"={asset_name}"])
             if list_result.returncode != 0:
+                self._print_error(
+                    f"扫描资源失败: {folder_path}\n"
+                    f"stderr: {list_result.stderr.strip()}"
+                )
                 return
-            matches = [
-                m for m in self._parse_list_output(list_result.stdout)
-                if m["name"] == asset_name
-            ]
+            matches = [m for m in self._parse_list_output(list_result.stdout) if m["name"] == asset_name]
             if not matches:
+                self._print_warning(f"未找到资源: {asset_name}")
                 return
-            self._import_single_asset(folder_path, matches[0], asset_name, new_data)
+            self._import_single_asset(folder_path, matches[0], asset_name, new_data, crc_fix)
+        except Exception as e:
+            self._print_error(f"修改资源失败: {asset_name}", e)
 
     def _import_single_asset(
         self,
@@ -427,215 +444,295 @@ class BundleExtractor(ToolManager):
         match: dict,
         asset_name: str,
         new_data: Any,
-        crc_fix: bool,
+        crc_fix: bool = True,
     ) -> None:
-        """将单个资源写入指定 bundle 文件，并修补 CRC/Size。"""
         try:
-            # ── 1. 获取原始文件的 CRC32 值 (整数形式) ──────────────────────
-            codec = CRC32()
-            with open(filepath, "rb") as f:
-                consume(codec, f)
-            original_crc_int = codec.digest()
-
+            original_crc_int = 0
+            if crc_fix:
+                codec = CRC32()
+                with open(filepath, "rb") as f:
+                    consume(codec, f)
+                original_crc_int = codec.digest()
             obj_type = match["type"]
             entry = match["entry"]
             path_id = match["path_id"]
-
-            # ── 2. 将 new_data 写入临时目录 ────────────────────────────────
             with tempfile.TemporaryDirectory() as tmp_dir:
                 import_file = self._new_data_to_file(
                     obj_type, new_data, asset_name, entry, path_id, tmp_dir
                 )
                 if import_file is None:
-                    # 这里回退逻辑删除，不再使用UnityPy
+                    self._print_error(
+                        f"不支持的资源类型或数据格式: type={obj_type}, asset={asset_name}"
+                    )
                     return
-
-                # ── 3. UABEA import 写回 ──────────────────────────────────
                 imp = self._run_uabea(["import", "-f", filepath, "-i", tmp_dir])
                 if imp.returncode != 0:
+                    self._print_error(
+                        f"UABEA import 失败: {filepath}\n"
+                        f"stdout: {imp.stdout.strip()}\n"
+                        f"stderr: {imp.stderr.strip()}"
+                    )
                     return
-
-            # ── 4. CRC 修补 (使用原始 CRC 整数值) ─────────────────────────
-            if crc_fix:
-                self._patch_crc(filepath, original_crc_int)
-
-        except Exception:
-            pass
-
-    # UABEA 导出格式映射
-    _EXPORT_FORMAT: dict = {
-        "Texture2D": "png",
-        "Sprite":    "png",
-        "AudioClip": "wav",
-        "TextAsset": "txt",
-        "Font":      "raw",
-        "VideoClip": "raw",
-        "Mesh":      "raw",
-        "MonoBehaviour": "json",
-        "Shader":    "raw",
-    }
+            if crc_fix and not self._patch_crc(filepath, original_crc_int):
+                self._print_error(f"资源已导入，但 CRC 修补失败: {filepath}")
+        except Exception as e:
+            self._print_error(f"导入资源失败: {filepath}", e)
 
     @staticmethod
     def _strip_uabea_suffix(filename: str) -> str:
         """
-        去除 UABEA 导出后缀：保留第一个点号前的名字，或者截断 -CAB- 后缀。
+        清理 UABEA 导出文件名中的 CAB / PathID 等附加信息。
+        例如：
+            Test-CAB-xxx.png -> Test.png
+            Test-xxxxxxxx.png -> Test.png
         """
-        name_part, _, ext = filename.rpartition(".")
-        
-        # 1. 优先处理 -CAB- 分割，取最左侧部分
+        name_part, ext = path.splitext(filename)
         if "-CAB-" in name_part:
-            return name_part.split("-CAB-")[0] + "." + ext
-        
-        # 2. 如果没有 CAB，尝试移除常见的 -xxx-xxx 后缀
+            return name_part.split("-CAB-", 1)[0] + ext
         parts = name_part.rsplit("-", 2)
-        if len(parts) >= 2 and len(parts[-1]) > 8: # 简单校验：PathID通常较长
-            return parts[0] + "." + ext
-            
+        if len(parts) >= 2 and len(parts[-1]) > 8:
+            return parts[0] + ext
         return filename
 
-    def extract_bundle(self, res_path: str, extract_types: Optional[List[str]] = None) -> None:
+    @staticmethod
+    def _remove_extension(filename: str) -> str:
+        """去除文件最后一个扩展名。"""
+        return path.splitext(filename)[0]
+
+    def extract_bundle(
+        self,
+        res_path: str,
+        extract_types: Optional[List[str]] = None,
+        extract_root: str = "output",
+        use_type_subdir: bool = True,
+        auto_rename_suffix: Optional[List[str]] = None,
+    ) -> None:
         """
-        使用 UABEA CLI export 提取资源到 BUNDLE_EXTRACT_FOLDER/{Type}/ 目录。
-        支持单文件（-f）和目录批量模式（-d --recursive）。
+        提取 Bundle 资源。
+
+        Args:
+            res_path: Bundle 文件或 Bundle 目录。
+            extract_types: 要提取的资源类型，None 表示 MAIN_EXTRACT_TYPES。
+            extract_root: 本次提取的根目录。
+            use_type_subdir: 是否按照资源类型创建二级目录。
+            auto_rename_suffix: 需要自动添加扩展名的资源类型列表。
+                None 表示所有类型均启用。
+                例如 ["Texture2D", "Font"] 表示仅这两个类型保留自动扩展名。
         """
-        types_to_extract = extract_types or self.MAIN_EXTRACT_TYPES
-        is_dir = os.path.isdir(res_path)
-        path_flag = "-d" if is_dir else "-f"
+        try:
+            if not os.path.exists(res_path):
+                self._print_error(f"提取源不存在: {res_path}")
+                return
+            types_to_extract = extract_types or self.MAIN_EXTRACT_TYPES
+            suffix_types = set(types_to_extract if auto_rename_suffix is None else auto_rename_suffix)
+            extract_root = os.path.abspath(extract_root)
+            is_dir = os.path.isdir(res_path)
+            path_flag = "-d" if is_dir else "-f"
+            self._print_info(
+                f"开始提取: {res_path} | 输出: {extract_root} | "
+                f"类型目录: {'开启' if use_type_subdir else '关闭'}"
+            )
+            for obj_type in types_to_extract:
+                fmt = self._EXPORT_FORMAT.get(obj_type, "raw")
+                with tempfile.TemporaryDirectory() as tmp_dir:
+                    export_args = [
+                        "export", path_flag, res_path,
+                        "-t", obj_type,
+                        "-o", tmp_dir,
+                        "--format", fmt,
+                    ]
+                    if is_dir:
+                        export_args.append("--recursive")
+                    result = self._run_uabea(export_args)
+                    exported_files = [
+                        f for f in os.listdir(tmp_dir)
+                        if path.isfile(path.join(tmp_dir, f))
+                    ]
+                    if result.returncode != 0:
+                        self._print_error(
+                            f"提取 {obj_type} 失败\n"
+                            f"stdout: {result.stdout.strip()}\n"
+                            f"stderr: {result.stderr.strip()}"
+                        )
+                        continue
+                    if not exported_files:
+                        self._print_info(f"{obj_type}: 没有找到可提取资源")
+                        continue
+                    extract_folder = path.join(extract_root, obj_type) if use_type_subdir else extract_root
+                    os.makedirs(extract_folder, exist_ok=True)
+                    success_count = 0
+                    for fname in exported_files:
+                        src = path.join(tmp_dir, fname)
+                        if obj_type in suffix_types:
+                            clean_name = self._strip_uabea_suffix(fname)
+                        else:
+                            clean_name = self._remove_extension(self._strip_uabea_suffix(fname))
+                        dst = path.join(extract_folder, clean_name)
+                        if path.exists(dst):
+                            self._print_warning(f"目标文件已存在，跳过: {dst}")
+                            continue
+                        try:
+                            shutil.move(src, dst)
+                            success_count += 1
+                        except Exception as e:
+                            self._print_error(f"移动提取文件失败: {src} -> {dst}", e)
+                    self._print_info(f"{obj_type}: 成功提取 {success_count}/{len(exported_files)}")
+        except Exception as e:
+            self._print_error(f"提取 Bundle 失败: {res_path}", e)
 
-        for obj_type in types_to_extract:
-            fmt = self._EXPORT_FORMAT.get(obj_type, "raw")
-            
-            with tempfile.TemporaryDirectory() as tmp_dir:
-                export_args = [
-                    "export", path_flag, res_path,
-                    "-t", obj_type,
-                    "-o", tmp_dir,
-                    "--format", fmt,
-                ]
-                if is_dir:
-                    export_args.append("--recursive")
-
-                result = self._run_uabea(export_args)
-                
-                # 检查临时目录中是否确实导出了文件
-                exported_files = [f for f in os.listdir(tmp_dir) if path.isfile(path.join(tmp_dir, f))]
-                if result.returncode != 0 or not exported_files:
-                    continue
-
-                # 只有在有资源的情况下才创建目标文件夹
-                extract_folder = path.join(self.BUNDLE_EXTRACT_FOLDER, obj_type)
-                os.makedirs(extract_folder, exist_ok=True)
-
-                for fname in exported_files:
-                    src = path.join(tmp_dir, fname)
-                    clean_name = self._strip_uabea_suffix(fname)
-                    dst = path.join(extract_folder, clean_name)
-                    if not path.exists(dst):
-                        import shutil
-                        shutil.move(src, dst)
-
-    def multiprocess_extract_worker(self, tasks: multiprocessing.Queue, extract_types: Optional[List[str]]) -> None:
+    def multiprocess_extract_worker(
+        self,
+        tasks: multiprocessing.Queue,
+        extract_types: Optional[List[str]],
+        extract_root: str = "output",
+        use_type_subdir: bool = True,
+        auto_rename_suffix: Optional[List[str]] = None,
+    ) -> None:
         """
-        消费 tasks 队列中的 bundle 路径，逐个调用 extract_bundle。
-        （UABEA CLI 本身已足够快，多进程只用于并行处理多文件。）
+        消费 tasks 队列中的 bundle 路径。
         """
-        while not tasks.empty():
+        while True:
             try:
                 bundle_path = tasks.get_nowait()
-                ProgressBar.item_text(path.basename(bundle_path))
-                self.extract_bundle(bundle_path, extract_types)
             except Exception:
-                pass
+                break
+            try:
+                ProgressBar.item_text(path.basename(bundle_path))
+                self.extract_bundle(
+                    bundle_path,
+                    extract_types,
+                    extract_root,
+                    use_type_subdir,
+                    auto_rename_suffix,
+                )
+            except Exception as e:
+                self._print_error(f"多进程提取失败: {bundle_path}", e)
 
-    def replace_asset_from_file(self, folder_path: str, asset_name: str, file_path: str, crc_fix: bool = True, asset_index: Optional[Dict[str, List[dict]]] = None) -> None:
+    def replace_asset_from_file(
+        self,
+        folder_path: str,
+        asset_name: str,
+        file_path: str,
+        crc_fix: bool = True,
+        asset_index: Optional[Dict[str, List[dict]]] = None,
+    ) -> None:
         """
-        将 ``file_path`` 中的资源替换进 bundle。
-
-        若传入 ``asset_index``（由 :func:`build_asset_index` 预先构建），
-        则直接通过索引查找资源所在文件，避免对目录重复执行
-        ``uabea list --recursive`` 扫描，显著提升批量修改速度。
-
-        若 ``asset_index`` 为 None 且 ``folder_path`` 是目录，仍执行旧逻辑
-        的单次扫描（兼容单文件/小批量调用）。
+        将 file_path 中的资源替换进 bundle。
         """
-        if os.path.isdir(folder_path):
-            if asset_index is not None:
-                all_matches = [
-                    m for m in asset_index.get(asset_name, [])
-                    if m.get("source_path")
-                ]
-            else:
-                list_result = self._run_uabea([
-                    "list", "-d", folder_path, "-n", f"={asset_name}", "--recursive",
-                ])
-                if list_result.returncode != 0:
-                    return
-                all_matches = [
-                    m for m in self._parse_list_output(list_result.stdout)
-                    if m["name"] == asset_name
-                ]
-            if not all_matches:
+        try:
+            if not os.path.exists(file_path):
+                self._print_error(f"替换文件不存在: {file_path}")
                 return
-            seen_files = set()
-            for match in all_matches:
-                target_filepath = match.get("source_path", "")
-                if target_filepath and target_filepath not in seen_files:
-                    seen_files.add(target_filepath)
-                    self._import_file_direct(target_filepath, match, asset_name, file_path, crc_fix)
-        else:
+            if os.path.isdir(folder_path):
+                if asset_index is not None:
+                    all_matches = [
+                        m for m in asset_index.get(asset_name, [])
+                        if m.get("source_path")
+                    ]
+                else:
+                    list_result = self._run_uabea([
+                        "list", "-d", folder_path, "-n", f"={asset_name}", "--recursive",
+                    ])
+                    if list_result.returncode != 0:
+                        self._print_error(
+                            f"扫描 Bundle 目录失败: {folder_path}\n"
+                            f"stderr: {list_result.stderr.strip()}"
+                        )
+                        return
+                    all_matches = [
+                        m for m in self._parse_list_output(list_result.stdout)
+                        if m["name"] == asset_name
+                    ]
+                if not all_matches:
+                    self._print_warning(f"未找到资源: {asset_name}")
+                    return
+                seen_files = set()
+                for match in all_matches:
+                    target_filepath = match.get("source_path", "")
+                    if target_filepath and target_filepath not in seen_files:
+                        seen_files.add(target_filepath)
+                        self._import_file_direct(
+                            target_filepath,
+                            match,
+                            asset_name,
+                            file_path,
+                            crc_fix,
+                        )
+                return
             list_result = self._run_uabea([
                 "list", "-f", folder_path, "-n", f"={asset_name}",
             ])
             if list_result.returncode != 0:
+                self._print_error(
+                    f"扫描 Bundle 文件失败: {folder_path}\n"
+                    f"stderr: {list_result.stderr.strip()}"
+                )
                 return
             matches = [
                 m for m in self._parse_list_output(list_result.stdout)
                 if m["name"] == asset_name
             ]
             if not matches:
+                self._print_warning(f"未找到资源: {asset_name}")
                 return
-            self._import_file_direct(folder_path, matches[0], asset_name, file_path, crc_fix)
+            self._import_file_direct(
+                folder_path,
+                matches[0],
+                asset_name,
+                file_path,
+                crc_fix,
+            )
+        except Exception as e:
+            self._print_error(f"替换资源失败: {asset_name}", e)
 
-    def _import_file_direct(self, filepath: str, match: dict, asset_name: str, file_path: str, crc_fix: bool) -> None:
+    def _import_file_direct(
+        self,
+        filepath: str,
+        match: dict,
+        asset_name: str,
+        file_path: str,
+        crc_fix: bool,
+    ) -> None:
         try:
-            # ── 1. 获取并记录被修改前的原始 CRC32 值 ──────────────────────
+            if not os.path.isfile(filepath):
+                self._print_error(f"目标 Bundle 文件不存在: {filepath}")
+                return
+            if not os.path.isfile(file_path):
+                self._print_error(f"资源文件不存在: {file_path}")
+                return
             original_crc_int = 0
             if crc_fix:
-                from crcmanip.crc import CRC32
-                from crcmanip.algorithm import consume
                 codec = CRC32()
                 with open(filepath, "rb") as f:
                     consume(codec, f)
                 original_crc_int = codec.digest()
-
             obj_type = match["type"]
             entry = match["entry"]
             path_id = match["path_id"]
-
             ext = os.path.splitext(file_path)[1]
             if not ext:
-                if obj_type == "TextAsset": ext = ".txt"
-                elif obj_type == "Texture2D": ext = ".png"
-                elif obj_type == "Font": ext = ".ttf"
-                else: ext = ".dat"
-
+                if obj_type == "TextAsset":
+                    ext = ".txt"
+                elif obj_type == "Texture2D":
+                    ext = ".png"
+                elif obj_type == "Font":
+                    ext = ".ttf"
+                else:
+                    ext = ".dat"
             stem = f"{asset_name}-{entry}-{path_id}" if entry else f"{asset_name}-{path_id}"
-
             with tempfile.TemporaryDirectory() as tmp_dir:
                 import_file = os.path.join(tmp_dir, stem + ext)
-                import shutil
                 shutil.copy2(file_path, import_file)
-
-                # ── 2. 执行导入修改 ──────────────────────
                 imp = self._run_uabea(["import", "-f", filepath, "-i", tmp_dir])
                 if imp.returncode != 0:
-                    print(f"[DEBUG] UABEA import 失败: {imp.stderr}")
+                    self._print_error(
+                        f"UABEA import 失败: {filepath}\n"
+                        f"stdout: {imp.stdout.strip()}\n"
+                        f"stderr: {imp.stderr.strip()}"
+                    )
                     return
-
-            # ── 3. 进行 CRC 修补并传入我们刚才算好的原始 CRC ────────────────
-            if crc_fix:
-                self._patch_crc(filepath, original_crc_int)
-
+            self._print_info(f"资源替换成功: {asset_name} -> {os.path.basename(filepath)}")
+            if crc_fix and not self._patch_crc(filepath, original_crc_int):
+                self._print_error(f"资源替换成功，但 CRC 修补失败: {filepath}")
         except Exception as e:
-            print(f"[DEBUG] 发生异常: {e}")
-            pass
+            self._print_error(f"导入资源失败: {filepath}", e)
