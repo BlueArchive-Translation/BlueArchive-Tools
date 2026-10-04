@@ -13,7 +13,7 @@ from xtractor.bundle import BundleExtractor
 
 
 spine_bundle = re.compile(r"(spinecharacters|spinelobbies)", re.I)
-spine_logical_name = re.compile(r"^(.*?)-.*?-(?:textures|textassets)-.*?\.bundle$", re.I)
+spine_logical_name = re.compile(r"^(.*?)-(?:textures|textassets)-.*?\.bundle$", re.I)
 spine_name = re.compile(r"(?:spinecharacters|spinelobbies)-([^-]+)-", re.I)
 
 
