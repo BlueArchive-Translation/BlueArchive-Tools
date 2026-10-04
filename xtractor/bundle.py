@@ -528,10 +528,7 @@ class BundleExtractor(ToolManager):
             extract_root = os.path.abspath(extract_root)
             is_dir = os.path.isdir(res_path)
             path_flag = "-d" if is_dir else "-f"
-            self._print_info(
-                f"开始提取: {res_path} | 输出: {extract_root} | "
-                f"类型目录: {'开启' if use_type_subdir else '关闭'}"
-            )
+            self._print_info(f"开始提取: {res_path} | 输出: {extract_root}")
             for obj_type in types_to_extract:
                 fmt = self._EXPORT_FORMAT.get(obj_type, "raw")
                 with tempfile.TemporaryDirectory() as tmp_dir:

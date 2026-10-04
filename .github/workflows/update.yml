@@ -76,8 +76,7 @@ jobs:
       - name: 安装依赖
         run: |
           pip install -r requirements.txt
-          sudo apt install -y android-sdk-build-tools
-          sudo apt install -y flatbuffers-compiler libflatbuffers-dev
+          sudo apt install -y android-sdk-build-tools flatbuffers-compiler libflatbuffers-dev
 
       - name: 运行更新
         shell: bash
