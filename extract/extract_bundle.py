@@ -33,7 +33,6 @@ def _extract_bundle_worker(args):
 
 
 class BundlePublisher:
-    COMMIT_IMAGE_COUNT = 200
     REMOTE_SPECIAL_ROOT = "/var/www/web"
 
     def __init__(self, server):
@@ -41,8 +40,7 @@ class BundlePublisher:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.repo_dir = os.path.join(self.temp_dir.name, f"BA-Bundles-Extract-{server}")
         self.config = {}
-        self.pending_images = 0
-        self.git = Git()
+        self.git = None
         self.ssh = SSHServer(host=os.environ["SERVER_HOST"], username="root", password=os.environ["SERVER_PASSWORD"], port=22)
         self.downloader = ResourceDownloader(server, verbose=True)
 
@@ -65,7 +63,8 @@ class BundlePublisher:
 
     def _clone(self):
         repo_url = Config.Bundle_repositories.format(server=self.server)
-        self.git.clone(repo_url, self.repo_dir)
+        Git().clone(repo_url, self.repo_dir)
+        self.git = Git(self.repo_dir)
 
     def _get_logical_bundle_name(self, filename):
         match = _SPECIAL_LOGICAL_NAME_PATTERN.match(filename)
@@ -86,14 +85,6 @@ class BundlePublisher:
         lower = filename.lower()
         return "textures" in lower or ("textassets" in lower and _SPECIAL_BUNDLE_PATTERN.search(lower))
 
-    def _get_extract_type(self, filename):
-        lower = filename.lower()
-        if "textassets" in lower and _SPECIAL_BUNDLE_PATTERN.search(lower):
-            return ["TextAsset"]
-        if "textures" in lower:
-            return ["Texture2D"]
-        return None
-
     def _build_groups(self, bundle_files, zip_root):
         groups = {}
         for bundle in bundle_files:
@@ -104,8 +95,7 @@ class BundlePublisher:
             if not os.path.isfile(path):
                 continue
             logical_name = self._get_logical_bundle_name(filename)
-            special = self._get_special_info(filename)
-            group = groups.setdefault(logical_name, {"name": logical_name, "special": special, "sources": []})
+            group = groups.setdefault(logical_name, {"name": logical_name, "special": self._get_special_info(filename), "sources": []})
             group["sources"].append({
                 "path": path,
                 "name": filename,
@@ -148,6 +138,10 @@ class BundlePublisher:
         self.ssh.remove_dir(remote)
         self.ssh.upload_directory(local_root, remote, create_parent=True)
 
+    def _stage_bundle(self, target_root):
+        path = os.path.relpath(target_root, self.repo_dir).replace("\\", "/")
+        self.git.add(path)
+
     def _extract_group(self, group):
         target_root = os.path.join(self.repo_dir, group["name"])
         if os.path.exists(target_root):
@@ -158,7 +152,8 @@ class BundlePublisher:
         for source in group["sources"]:
             temp_root = tempfile.mkdtemp(prefix="bundle_extract_")
             temp_roots.append(temp_root)
-            tasks.append((source["path"], temp_root, ["TextAsset"] if source["type"] == "textassets" else ["Texture2D"]))
+            extract_types = ["TextAsset"] if source["type"] == "textassets" else ["Texture2D"]
+            tasks.append((source["path"], temp_root, extract_types))
         resources = []
         try:
             with ProcessPoolExecutor(max_workers=os.cpu_count() or 1) as executor:
@@ -177,54 +172,44 @@ class BundlePublisher:
             "sources": {source["name"]: {"size": source["size"], "crc": source["crc"]} for source in group["sources"]},
             "resources": resources,
         }
-        self.pending_images += sum(1 for item in resources if item["name"].lower().endswith(".png"))
+        self._stage_bundle(target_root)
         self._upload_special(target_root, group)
 
-    def _commit_push_resources(self):
-        if not self.git.has_changes(self.repo_dir):
-            self.pending_images = 0
+    def _commit_zip(self, pack_name):
+        if not self.git.has_staged_changes():
             return
-        self.git.add(self.repo_dir)
-        self.git.commit(self.repo_dir, f"Update bundles ({self.pending_images} images)")
+        self.git.commit(f"Update bundles: {pack_name}")
         self.git.push()
-        self.pending_images = 0
-
-    def _commit_if_needed(self):
-        if self.pending_images >= self.COMMIT_IMAGE_COUNT:
-            self._commit_push_resources()
 
     def _process_zip(self, zip_path, pack):
         zip_root = tempfile.mkdtemp(prefix="bundle_zip_")
         try:
             ZipUtils.extract_zip(zip_path, zip_root)
             groups = self._build_groups(pack.get("BundleFiles", []), zip_root)
+            changed = False
             for group in groups.values():
                 if not self._is_changed(self.config.get(group["name"]), group):
                     continue
                 self._extract_group(group)
-                self._commit_if_needed()
+                changed = True
             self._save_config()
+            if changed:
+                self._commit_zip(pack.get("PackName", "unknown"))
         finally:
             shutil.rmtree(zip_root, ignore_errors=True)
 
     def _download_pack(self, pack):
         filename = pack["PackName"]
         temp_dir = tempfile.mkdtemp(prefix="patch_pack_")
-        path = os.path.join(temp_dir, filename)
         try:
             result = self.downloader.get_bundle_files([filename], save_path=temp_dir)
+            path = os.path.join(temp_dir, os.path.basename(filename))
             if isinstance(result, dict):
-                result_path = result.get(filename) or result.get(os.path.basename(filename))
-                if result_path:
-                    path = result_path
+                path = result.get(filename) or result.get(os.path.basename(filename)) or path
             elif isinstance(result, list) and result:
                 path = result[0]
             elif isinstance(result, str):
                 path = result
-            if not os.path.isfile(path):
-                candidate = os.path.join(temp_dir, os.path.basename(filename))
-                if os.path.isfile(candidate):
-                    path = candidate
             if not os.path.isfile(path):
                 raise FileNotFoundError(f"Pack download failed: {filename}")
             return path, temp_dir
@@ -246,17 +231,15 @@ class BundlePublisher:
             finally:
                 shutil.rmtree(temp_dir, ignore_errors=True)
 
-    def _finalize(self):
-        if self.pending_images:
-            self._commit_push_resources()
-        self._save_config()
-        if os.path.abspath(Config.bundle_config).startswith(os.path.abspath(self.repo_dir) + os.sep):
-            self.git.add(Config.bundle_config)
-        else:
-            self.git.add(self.repo_dir, Config.bundle_config)
-        if self.git.has_changes(self.repo_dir):
-            self.git.commit(self.repo_dir, "Update bundle config")
+    def _commit_config(self):
+        self.git.add(Config.bundle_config)
+        if self.git.has_staged_changes():
+            self.git.commit("Update bundle config")
             self.git.push()
+
+    def _finalize(self):
+        self._save_config()
+        self._commit_config()
 
     def run(self):
         try:
