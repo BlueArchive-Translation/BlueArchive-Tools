@@ -122,17 +122,23 @@ class BundlePublisher:
 
         category, role = special
         remote = f"/var/www/web/{category}/{role}"
+        parent = os.path.dirname(remote)
 
         print(f"[上传] spine资源: {category}/{role}")
 
-        if self.ssh.exists(remote):
-            if not self.ssh.is_dir(remote):
-                self.ssh.remove(remote, force=True)
-            else:
-                self.ssh.remove_dir(remote)
+        self.ssh.remove(remote, recursive=True, force=True)
+        self.ssh.mkdir(parent, parents=True)
+        self.ssh.mkdir(remote, parents=True)
 
-        self.ssh.mkdir(os.path.dirname(remote), parents=True)
-        self.ssh.upload_directory(local_root, remote, create_parent=True)
+        for name in os.listdir(local_root):
+            local_path = os.path.join(local_root, name)
+            remote_path = f"{remote}/{name}"
+            self.ssh.upload(
+                local_path,
+                remote_path,
+                recursive=os.path.isdir(local_path),
+                create_parent=True
+            )
 
     def _extract_group(self, group, zip_name):
         target_root = os.path.join(self.repo_dir, zip_name, group["name"])
@@ -155,6 +161,7 @@ class BundlePublisher:
                     extract_types=[source["extract_type"]],
                     extract_root=temp_root,
                     use_type_subdir=False,
+                    auto_rename_suffix=["Texture2D"],
                 )
 
                 self._merge(temp_root, target_root)
