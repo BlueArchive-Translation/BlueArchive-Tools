@@ -262,6 +262,7 @@ class CSParser:
 
 class CompileToPython:
     DUMP_WRAPPER_NAME = "dump_wrapper"
+    FBS_FIELD_SUFFIX = "_field"
 
     def __init__(self, enums: list[EnumType], structs: list[StructTable], extract_dir: str) -> None:
         self.enums = enums
@@ -336,8 +337,16 @@ class CompileToPython:
                         continue
                     generated_types.add(struct.name)
                     excel_type = struct.properties[0].data_type
-                    file.write(f"table {struct.name} {{\n    data_list:[{excel_type}];\n}}\n\n")
-                roots = [struct.name for struct in structs if struct.name.endswith("Table") and struct.name in generated_types]
+                    file.write(
+                        f"table {struct.name} {{\n"
+                        f"    data_list:[{excel_type}];\n"
+                        f"}}\n\n"
+                    )
+                roots = [
+                    struct.name
+                    for struct in structs
+                    if struct.name.endswith("Table") and struct.name in generated_types
+                ]
                 if roots:
                     file.write(f"root_type {roots[0]};\n")
 
@@ -346,7 +355,10 @@ class CompileToPython:
             fbs = os.path.join(output_dir, "flatdata.fbs")
             if not os.path.isfile(fbs):
                 continue
-            subprocess.run(["flatc", "--python", "-I", self.extract_dir, "-o", output_dir, fbs], check=True)
+            subprocess.run(
+                ["flatc", "--python", "-I", self.extract_dir, "-o", output_dir, fbs],
+                check=True,
+            )
             self.__fix_flatc_imports(output_dir)
 
     def __fix_flatc_imports(self, output_dir: str) -> None:
@@ -362,8 +374,14 @@ class CompileToPython:
             for filename in os.listdir(output_dir)
             if filename.endswith(".py") and filename != "__init__.py"
         }
-        from_pattern = re.compile(r"^(\s*)from\s+([A-Za-z_]\w*)\s+import\s+(.+?)\s*$", re.M)
-        import_pattern = re.compile(r"^(\s*)import\s+([A-Za-z_]\w*)(\s+as\s+[A-Za-z_]\w+)?\s*$", re.M)
+        from_pattern = re.compile(
+            r"^(\s*)from\s+([A-Za-z_]\w*)\s+import\s+(.+?)\s*$",
+            re.M,
+        )
+        import_pattern = re.compile(
+            r"^(\s*)import\s+([A-Za-z_]\w*)(\s+as\s+[A-Za-z_]\w+)?\s*$",
+            re.M,
+        )
         for filename in os.listdir(output_dir):
             if not filename.endswith(".py"):
                 continue
@@ -409,14 +427,27 @@ class CompileToPython:
                         name = Utils.convert_name_to_available(struct.name)
                         file.write(f"from .{name} import {name}\n")
 
-    def __wrap_value(self, prop: Property, p_name: str, getter: str, is_list: bool = False, source: str = "Excel") -> str:
+    def __wrap_value(
+        self,
+        prop: Property,
+        p_name: str,
+        getter: str,
+        is_list: bool = False,
+        source: str = "Excel",
+    ) -> str:
         if prop.data_type in ConvertFlag.__members__:
-            conversion = String.WRAPPER_PASSWD_CONVERTION(ConvertFlag[prop.data_type].value, getter)
+            conversion = String.WRAPPER_PASSWD_CONVERTION(
+                ConvertFlag[prop.data_type].value,
+                getter,
+            )
         elif prop.data_type == "bool":
             conversion = f"bool({getter})"
         elif data := self.__type_in_struct_or_num(prop.data_type, source):
             if isinstance(data, StructTable):
-                conversion = String.WRAPPER_PASSWD_CONVERTION(self.__get_source_name(data), getter)
+                conversion = String.WRAPPER_PASSWD_CONVERTION(
+                    self.__get_source_name(data),
+                    getter,
+                )
             else:
                 conversion = String.WRAPPER_ENUM_CONVERTION(
                     Utils.convert_name_to_available(data.name),
@@ -428,12 +459,22 @@ class CompileToPython:
         else:
             conversion = getter
         if is_list:
-            return String.WRAPPER_LIST_KV(p_name, String.WRAPPER_LIST_CONVERTION(conversion, p_name))
+            return String.WRAPPER_LIST_KV(
+                p_name,
+                String.WRAPPER_LIST_CONVERTION(conversion, p_name),
+            )
         return String.WRAPPER_PROP_KV(p_name, conversion)
 
     def __wrap_prop(self, prop: Property, p_name: str, source: str) -> str:
-        getter = String.WRAPPER_LIST_GETTER(p_name) if prop.is_list else String.WRAPPER_GETTER(p_name)
-        return self.__wrap_value(prop, p_name, getter, prop.is_list, source)
+        field_name = self.__fbs_field_name("", prop.name, set())
+        accessor_name = Utils.convert_name_to_available(field_name).title().replace("_", "")
+        getter = String.WRAPPER_LIST_GETTER(accessor_name) if prop.is_list else String.WRAPPER_GETTER(accessor_name)
+        if prop.is_list:
+            return self.__wrap_value(prop, p_name, getter, True, source).replace(
+                f"range(excel_instance.{p_name}Length())",
+                f"range(excel_instance.{accessor_name}Length())",
+            )
+        return self.__wrap_value(prop, p_name, getter, False, source)
 
     def create_dump_dict_file(self) -> None:
         path = os.path.join(self.extract_dir, f"{self.DUMP_WRAPPER_NAME}.py")
@@ -449,9 +490,14 @@ class CompileToPython:
                 if enum.underlying_type != "int":
                     notice(f"No implementation found for enum type: {enum.underlying_type}.")
                 for member in enum.members:
-                    file.write(String.INDENT + String.VARIABLE_ASSIGNMENT(
-                        Utils.convert_name_to_available(member.name), member.value
-                    ) + "\n")
+                    file.write(
+                        String.INDENT
+                        + String.VARIABLE_ASSIGNMENT(
+                            Utils.convert_name_to_available(member.name),
+                            member.value,
+                        )
+                        + "\n"
+                    )
                 file.write("\n")
             for struct in self.structs:
                 dump_name = self.__get_source_name(struct)
@@ -460,7 +506,11 @@ class CompileToPython:
                 generated_types.add(dump_name)
                 items = "".join(
                     String.INDENT * 2
-                    + self.__wrap_prop(prop, Utils.convert_name_to_available(prop.name), struct.source)
+                    + self.__wrap_prop(
+                        prop,
+                        Utils.convert_name_to_available(prop.name),
+                        struct.source,
+                    )
                     for prop in struct.properties
                 )
                 file.write(String.WRAPPER_FUNC(dump_name, items))
@@ -514,13 +564,23 @@ from . import Excel, ExcelDB
                     f"encrypt_string(data.get('{prop.name}', ''), password))\n"
                 )
             else:
-                conversion, _ = self._get_conversion_code(prop, f"data.get('{prop.name}', 0)")
+                conversion, _ = self._get_conversion_code(
+                    prop,
+                    f"data.get('{prop.name}', 0)",
+                )
                 file.write(f"    {prop.name}_val = {conversion}\n")
         file.write(f"    {module_name}.{struct_name}.Start(builder)\n")
         for prop in struct.properties:
-            value = f"{prop.name}_vec" if prop.is_list else f"{prop.name}_off" if prop.data_type == "string" else f"{prop.name}_val"
+            value = (
+                f"{prop.name}_vec"
+                if prop.is_list
+                else f"{prop.name}_off"
+                if prop.data_type == "string"
+                else f"{prop.name}_val"
+            )
             field_name = self.__fbs_field_name(struct.name, prop.name, set())
-            file.write(f"    {module_name}.{struct_name}.Add{Utils.convert_name_to_available(field_name).title().replace('_', '')}(builder, {value})\n")
+            method_name = Utils.convert_name_to_available(field_name).title().replace("_", "")
+            file.write(f"    {module_name}.{struct_name}.Add{method_name}(builder, {value})\n")
         file.write(f"    return {module_name}.{struct_name}.End(builder)\n\n")
 
     def __write_repack_vector(self, file, struct: StructTable, prop: Property) -> None:
@@ -528,11 +588,17 @@ from . import Excel, ExcelDB
         struct_name = Utils.convert_name_to_available(struct.name)
         name = prop.name
         data_type = prop.data_type
-        file.write(f"    {name}_vec = 0\n    if '{name}' in data:\n        {name}_items = data['{name}']\n")
+        field_name = self.__fbs_field_name(struct.name, prop.name, set())
+        method_name = Utils.convert_name_to_available(field_name).title().replace("_", "")
+        file.write(
+            f"    {name}_vec = 0\n"
+            f"    if '{name}' in data:\n"
+            f"        {name}_items = data['{name}']\n"
+        )
         if data_type == "string":
             file.write(
                 f"        {name}_offsets = [builder.CreateString(encrypt_string(item, password)) for item in {name}_items]\n"
-                f"        {module_name}.{struct_name}.Start{name.title().replace('_', '')}Vector(builder, len({name}_offsets))\n"
+                f"        {module_name}.{struct_name}.Start{method_name}Vector(builder, len({name}_offsets))\n"
                 f"        for offset in reversed({name}_offsets):\n"
                 f"            builder.PrependUOffsetTRelative(offset)\n"
             )
@@ -540,14 +606,14 @@ from . import Excel, ExcelDB
             child_name = self.__get_repack_name(child)
             file.write(
                 f"        {name}_offsets = [pack_{child_name}(builder, item, encrypt) for item in {name}_items]\n"
-                f"        {module_name}.{struct_name}.Start{name.title().replace('_', '')}Vector(builder, len({name}_offsets))\n"
+                f"        {module_name}.{struct_name}.Start{method_name}Vector(builder, len({name}_offsets))\n"
                 f"        for offset in reversed({name}_offsets):\n"
                 f"            builder.PrependUOffsetTRelative(offset)\n"
             )
         else:
             flag = DataFlag.__members__.get(data_type, DataFlag.int).value
             file.write(
-                f"        {module_name}.{struct_name}.Start{name.title().replace('_', '')}Vector(builder, len({name}_items))\n"
+                f"        {module_name}.{struct_name}.Start{method_name}Vector(builder, len({name}_items))\n"
                 f"        for item in reversed({name}_items):\n"
                 f"            builder.Prepend{flag}({self._get_conversion_code(prop, 'item')[0]})\n"
             )
@@ -575,14 +641,21 @@ from . import Excel, ExcelDB
 
     @staticmethod
     def __to_snake_case(name: str) -> str:
-        return re.sub(r"_+", "_", re.sub(r"[^a-z0-9_]", "_", re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower())).strip("_")
+        return re.sub(
+            r"_+",
+            "_",
+            re.sub(
+                r"[^a-z0-9_]",
+                "_",
+                re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower(),
+            ),
+        ).strip("_")
 
     def __fbs_field_name(self, struct_name: str, field_name: str, used_names: set) -> str:
         name = self.__to_snake_case(field_name) or "field"
         if name[0].isdigit():
             name = "_" + name
-        if name == self.__to_snake_case(struct_name):
-            name += "_value"
+        name += self.FBS_FIELD_SUFFIX
         if name in used_names:
             index = 1
             while f"{name}_{index}" in used_names:

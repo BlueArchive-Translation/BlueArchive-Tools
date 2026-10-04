@@ -39,10 +39,7 @@ class TablePublisher:
             git = Git(repo_path)
             git.checkout("main")
 
-            shutil.copy2(
-                zip_path,
-                os.path.join(repo_path, os.path.basename(zip_path))
-            )
+            shutil.copy2(zip_path, os.path.join(repo_path, os.path.basename(zip_path)))
             git.add(os.path.basename(zip_path))
 
             if git.has_staged_changes():

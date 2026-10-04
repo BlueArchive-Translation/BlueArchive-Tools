@@ -1,10 +1,9 @@
-import argparse
 import json
 import os
 import re
 import shutil
 import tempfile
-import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from utils.download import ResourceDownloader
 from utils.util import ZipUtils
@@ -14,307 +13,258 @@ from utils.server import SSHServer
 from xtractor.bundle import BundleExtractor
 
 
+_SPECIAL_BUNDLE_PATTERN = re.compile(r"(spinecharacters|spinelobbies)", re.I)
+_SPECIAL_LOGICAL_NAME_PATTERN = re.compile(r"^(.*?)-_mxdependency-(?:textures|textassets)-\d{4}-\d{2}-\d{2}_assets_all_\d+\.bundle$", re.I)
+_ROLE_NAME_PATTERN = re.compile(r"(?:spinecharacters|spinelobbies)-([^-]+)-", re.I)
+
+
+def _extract_bundle_worker(args):
+    bundle_path, extract_root, extract_types = args
+    try:
+        BundleExtractor().extract_bundle(bundle_path, extract_types=extract_types, extract_root=extract_root, use_type_subdir=False)
+        resources = []
+        for root, _, files in os.walk(extract_root):
+            for name in files:
+                path = os.path.join(root, name)
+                resources.append({"name": os.path.relpath(path, extract_root).replace("\\", "/"), "size": os.path.getsize(path)})
+        return True, resources, None
+    except Exception as e:
+        return False, [], str(e)
+
+
 class BundlePublisher:
+    COMMIT_IMAGE_COUNT = 200
+    REMOTE_SPECIAL_ROOT = "/var/www/web"
+
     def __init__(self, server):
         self.server = server
-        self.bundle_repositories = getattr(Config, f"Bundle_repositories_{server}")
-        self.repo_root = tempfile.mkdtemp(prefix="bundle_")
-        self.spine_roots = {}
-        self.ssh_server = None
-        self.rd = ResourceDownloader(server)
-        self.extractor = BundleExtractor()
-        self.data = self.load_json()
-        self.temp_root = None
-        self.git_state = None
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.repo_dir = os.path.join(self.temp_dir.name, f"BA-Bundles-Extract-{server}")
+        self.config = {}
+        self.pending_images = 0
+        self.git = Git()
+        self.ssh = SSHServer(host=os.environ["SERVER_HOST"], username="root", password=os.environ["SERVER_PASSWORD"], port=22)
+        self.downloader = ResourceDownloader(server, verbose=True)
 
-    @staticmethod
-    def is_texture_bundle(filename):
-        """过滤非图片资源"""
-        name = os.path.basename(filename).lower()
-        return name.endswith(".bundle") and bool(re.search(r"(?:^|-)textures(?:-|_)", name))
+    def _load_config(self):
+        if os.path.isfile(Config.bundle_config):
+            try:
+                with open(Config.bundle_config, "r", encoding="utf-8") as f:
+                    self.config = json.load(f)
+            except Exception:
+                self.config = {}
+        else:
+            self.config = {}
 
-    @staticmethod
-    def spine_type(filename):
-        """过滤角色立绘和记忆大厅"""
-        name = os.path.basename(filename).lower()
-        m = re.search(r"(?:^|-)spinecharacters-([^-]+)-", name)
-        if m:
-            return "spinecharacters", m.group(1)
-        m = re.search(r"(?:^|-)spinelobbies-([^-]+)-", name)
-        if m:
-            return "spinelobbies", m.group(1)
+    def _save_config(self):
+        parent = os.path.dirname(Config.bundle_config)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(Config.bundle_config, "w", encoding="utf-8") as f:
+            json.dump(self.config, f, ensure_ascii=False, indent=2)
+
+    def _clone(self):
+        repo_url = Config.Bundle_repositories.format(server=self.server)
+        self.git.clone(repo_url, self.repo_dir)
+
+    def _get_logical_bundle_name(self, filename):
+        match = _SPECIAL_LOGICAL_NAME_PATTERN.match(filename)
+        if match:
+            return match.group(1)
+        return re.sub(r"_\d+\.bundle$", "", filename, flags=re.I)
+
+    def _get_special_info(self, filename):
+        match = _SPECIAL_BUNDLE_PATTERN.search(filename)
+        if not match:
+            return None
+        role = _ROLE_NAME_PATTERN.search(filename)
+        if not role:
+            return None
+        return match.group(1).lower(), role.group(1)
+
+    def _is_extractable(self, filename):
+        lower = filename.lower()
+        return "textures" in lower or ("textassets" in lower and _SPECIAL_BUNDLE_PATTERN.search(lower))
+
+    def _get_extract_type(self, filename):
+        lower = filename.lower()
+        if "textassets" in lower and _SPECIAL_BUNDLE_PATTERN.search(lower):
+            return ["TextAsset"]
+        if "textures" in lower:
+            return ["Texture2D"]
         return None
 
-    @staticmethod
-    def bundle_regex(filename):
-        """去除文件的时间和CRC，避免因更新导致无法匹配"""
-        name = os.path.basename(filename)
-        stem, ext = os.path.splitext(name)
-        stem = re.sub(r"-\d{4}-\d{2}-\d{2}", "-{DATE}", stem)
-        stem = re.sub(r"_\d+$", "_{CRC}", stem)
-        pattern = re.escape(stem + ext)
-        pattern = pattern.replace(re.escape("-{DATE}"), r"-\d{4}-\d{2}-\d{2}")
-        pattern = pattern.replace(re.escape("_{CRC}"), r"_\d+")
-        return f"^{pattern}$"
-
-    @staticmethod
-    def load_json():
-        """加载config文件"""
-        if not os.path.isfile(Config.bundle_config):
-            return {}
-        try:
-            with open(Config.bundle_config, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            return {}
-        return data if isinstance(data, dict) else {}
-
-    @staticmethod
-    def save_json(data):
-        """保存config文件"""
-        temp = f"{Config.bundle_config}.tmp"
-        with open(temp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(temp, Config.bundle_config)
-
-    @staticmethod
-    def build_server_data():
-        """创建服务器配置"""
-        return {"FullPatchPacks": [], "UpdatePacks": []}
-
-    @staticmethod
-    def find_bundle(extract_dir, filename):
-        """寻找bundle文件"""
-        for root, _, files in os.walk(extract_dir):
-            if filename in files:
-                return os.path.join(root, filename)
-        return None
-
-    @staticmethod
-    def scan_bundle(extractor, bundle_path, data_type):
-        """扫描bundle资源"""
-        try:
-            result = extractor.search_unity_pack(bundle_path, data_type=[data_type], collect_only=False)
-        except Exception:
-            return {}
-        assets = {}
-        for obj in result:
-            info = getattr(obj, "_info", {})
-            name = info.get("name", "")
-            if name:
-                assets[name] = {"PathID": info.get("path_id", ""), "Entry": info.get("entry", "")}
-        return assets
-
-    @staticmethod
-    def extract_bundle_type(extractor, bundle_path, output_dir, data_type):
-        """提取类型设置"""
-        os.makedirs(output_dir, exist_ok=True)
-        old_dir = extractor.BUNDLE_EXTRACT_FOLDER
-        extractor.BUNDLE_EXTRACT_FOLDER = output_dir
-        try:
-            extractor.extract_bundle(bundle_path, [data_type])
-        finally:
-            extractor.BUNDLE_EXTRACT_FOLDER = old_dir
-
-    @staticmethod
-    def flatten_spine_output(output):
-        """将TextAsset和Texture2D中的文件移动到角色目录"""
-        for resource_type in ("TextAsset", "Texture2D"):
-            resource_dir = os.path.join(output, resource_type)
-            if not os.path.isdir(resource_dir):
+    def _build_groups(self, bundle_files, zip_root):
+        groups = {}
+        for bundle in bundle_files:
+            filename = bundle["Name"]
+            if not self._is_extractable(filename):
                 continue
-            for root, _, files in os.walk(resource_dir):
-                for filename in files:
-                    source = os.path.join(root, filename)
-                    target = os.path.join(output, filename)
-                    if os.path.exists(target):
-                        os.remove(target)
-                    shutil.move(source, target)
-            shutil.rmtree(resource_dir, ignore_errors=True)
+            path = os.path.join(zip_root, filename)
+            if not os.path.isfile(path):
+                continue
+            logical_name = self._get_logical_bundle_name(filename)
+            special = self._get_special_info(filename)
+            group = groups.setdefault(logical_name, {"name": logical_name, "special": special, "sources": []})
+            group["sources"].append({
+                "path": path,
+                "name": filename,
+                "size": bundle.get("Size", 0),
+                "crc": bundle.get("Crc", 0),
+                "type": "textassets" if "textassets" in filename.lower() else "textures",
+            })
+        return groups
 
-    def upload_spine_output(self, output, spine_type_value, name):
-        """上传Spine资源"""
-        remote_root = f"/var/www/web/{spine_type_value}"
-        remote_path = f"{remote_root}/{name}"
-        if os.path.isdir(output):
-            self.ssh_server.upload(output, remote_path, recursive=True)
-            print(f"[Server] 上传 Spine：{remote_path}")
+    def _is_changed(self, old, group):
+        if not old:
+            return True
+        old_sources = old.get("sources", {})
+        if len(old_sources) != len(group["sources"]):
+            return True
+        for source in group["sources"]:
+            item = old_sources.get(source["name"])
+            if not item or item.get("size") != source["size"] or item.get("crc") != source["crc"]:
+                return True
+        return False
 
-    def extract_spine_bundle(self, bundle_path, spine_type_value, name, output_root):
-        """提取并上传spine"""
-        output = os.path.join(output_root, name)
-        textassets = self.scan_bundle(self.extractor, bundle_path, "TextAsset")
-        textures = self.scan_bundle(self.extractor, bundle_path, "Texture2D")
-        if textassets or textures:
-            self.extract_bundle_type(self.extractor, bundle_path, output, "TextAsset")
-            self.extract_bundle_type(self.extractor, bundle_path, output, "Texture2D")
-            self.flatten_spine_output(output)
-            self.upload_spine_output(output, spine_type_value, name)
-        return textassets, textures
+    def _merge(self, source_root, target_root):
+        os.makedirs(target_root, exist_ok=True)
+        for root, _, files in os.walk(source_root):
+            relative = os.path.relpath(root, source_root)
+            target = target_root if relative == "." else os.path.join(target_root, relative)
+            os.makedirs(target, exist_ok=True)
+            for name in files:
+                src = os.path.join(root, name)
+                dst = os.path.join(target, name)
+                if os.path.exists(dst):
+                    os.remove(dst)
+                shutil.move(src, dst)
 
-    def extract_texture_bundle(self, bundle_path, zip_name, bundle_name, output_root):
-        """提取Texture2D"""
-        zip_stem = os.path.splitext(os.path.basename(zip_name))[0]
-        bundle_stem = os.path.splitext(os.path.basename(bundle_name))[0]
-        output = os.path.join(output_root, zip_stem, bundle_stem)
-        self.extract_bundle_type(self.extractor, bundle_path, output, "Texture2D")
+    def _upload_special(self, local_root, group):
+        if not group["special"]:
+            return
+        category, role = group["special"]
+        remote = os.path.join(self.REMOTE_SPECIAL_ROOT, category, role)
+        self.ssh.remove_dir(remote)
+        self.ssh.upload_directory(local_root, remote, create_parent=True)
 
-    @staticmethod
-    def build_bundle_record(bundle):
-        return {"Name": bundle.get("Name", ""), "Size": bundle.get("Size", 0), "Crc": bundle.get("Crc", 0), "Textures2D": {}}
-
-    def build_bundle_record_with_assets(self, bundle, extract_dir, zip_name, output_root):
-        name = bundle.get("Name", "")
-        record = self.build_bundle_record(bundle)
-        record["Name"] = self.bundle_regex(name)
-        if not name:
-            return record
-        bundle_path = self.find_bundle(extract_dir, name)
-        if not bundle_path:
-            return record
-
-        # 只有JP服务器处理Spine
-        if self.server == "JP":
-            spine_info = self.spine_type(name)
-            if spine_info:
-                spine_type_value, spine_name = spine_info
-                spine_output_root = self.spine_roots[spine_type_value]
-                textassets, textures = self.extract_spine_bundle(bundle_path, spine_type_value, spine_name, spine_output_root)
-                record["TextAssets"] = textassets
-                record["Textures2D"] = textures
-                return record
-
-        if not self.is_texture_bundle(name):
-            return record
-        textures = self.scan_bundle(self.extractor, bundle_path, "Texture2D")
-        record["Textures2D"] = textures
-        if textures:
-            self.extract_texture_bundle(bundle_path, zip_name, name, output_root)
-        return record
-
-    def download_pack(self, pack_name, zip_dir):
-        while True:
-            result = self.rd.get_bundle_files([pack_name], save_path=zip_dir, workers=1).get(pack_name)
-            if result is not False and result is not None:
-                return os.path.join(zip_dir, pack_name)
-            print(f"[Download] {pack_name} 暂未开放")
-            time.sleep(30)
-
-    @staticmethod
-    def build_pack_record(pack):
-        return {"PackName": pack.get("PackName", ""), "PackSize": pack.get("PackSize", 0), "Crc": pack.get("Crc", 0), "BundleFiles": []}
-
-    @staticmethod
-    def is_pack_processed(pack_record, pack):
-        """判断Pack是否已经处理过"""
-        return pack_record.get("PackName", "") == pack.get("PackName", "") and pack_record.get("PackSize", 0) == pack.get("PackSize", 0) and pack_record.get("Crc", 0) == pack.get("Crc", 0)
-
-    def find_processed_pack(self, pack_type, pack):
-        """查找已经处理过的Pack"""
-        for pack_record in self.data.get(self.server, {}).get(pack_type, []):
-            if self.is_pack_processed(pack_record, pack):
-                return pack_record
-        return None
-
-    def process_pack(self, pack, pack_type, index, total):
-        pack_name = pack["PackName"]
-        print(f"[ZIP] {index}/{total} {pack_name}")
-        zip_dir = tempfile.mkdtemp(prefix="zip_", dir=self.temp_root)
-        extract_dir = tempfile.mkdtemp(prefix="extract_", dir=self.temp_root)
+    def _extract_group(self, group):
+        target_root = os.path.join(self.repo_dir, group["name"])
+        if os.path.exists(target_root):
+            shutil.rmtree(target_root)
+        os.makedirs(target_root, exist_ok=True)
+        tasks = []
+        temp_roots = []
+        for source in group["sources"]:
+            temp_root = tempfile.mkdtemp(prefix="bundle_extract_")
+            temp_roots.append(temp_root)
+            tasks.append((source["path"], temp_root, ["TextAsset"] if source["type"] == "textassets" else ["Texture2D"]))
+        resources = []
         try:
-            zip_path = self.download_pack(pack_name, zip_dir)
-            ZipUtils.extract_zip(zip_path, extract_dir, progress_bar=False)
-            pack_record = self.find_processed_pack(pack_type, pack)
-            if pack_record:
-                self.data[self.server][pack_type].remove(pack_record)
-            pack_record = self.build_pack_record(pack)
-            self.data[self.server][pack_type].append(pack_record)
-            self.save_json(self.data)
-            for bundle in pack.get("BundleFiles", []):
-                record = self.build_bundle_record_with_assets(bundle, extract_dir, pack_name, self.repo_root)
-                pack_record["BundleFiles"].append(record)
-                self.save_json(self.data)
-                self.git_state["pending"] += len(record.get("Textures2D", {}))
-                if self.git_state["pending"] >= 200:
-                    self.git_state["git"].add(".")
-                    if self.git_state["git"].has_staged_changes():
-                        self.git_state["git"].commit(f"Update resources ({self.git_state['pending']} images)")
-                        self.git_state["git"].push()
-                        print(f"[Git] 提交 {self.git_state['pending']} 个新增图片")
-                    self.git_state["pending"] = 0
-            print(f"[ZIP] 完成：{pack_name}")
+            with ProcessPoolExecutor(max_workers=os.cpu_count() or 1) as executor:
+                futures = {executor.submit(_extract_bundle_worker, task): (source, temp_root) for task, source, temp_root in zip(tasks, group["sources"], temp_roots)}
+                for future in as_completed(futures):
+                    source, temp_root = futures[future]
+                    success, result, error = future.result()
+                    if not success:
+                        raise RuntimeError(f"extract failed: {source['name']}: {error}")
+                    self._merge(temp_root, target_root)
+                    resources.extend(result)
         finally:
-            shutil.rmtree(zip_dir, ignore_errors=True)
-            shutil.rmtree(extract_dir, ignore_errors=True)
+            for temp_root in temp_roots:
+                shutil.rmtree(temp_root, ignore_errors=True)
+        self.config[group["name"]] = {
+            "sources": {source["name"]: {"size": source["size"], "crc": source["crc"]} for source in group["sources"]},
+            "resources": resources,
+        }
+        self.pending_images += sum(1 for item in resources if item["name"].lower().endswith(".png"))
+        self._upload_special(target_root, group)
 
-    def init(self):
-        Git().clone(self.bundle_repositories, self.repo_root)
+    def _commit_push_resources(self):
+        if not self.git.has_changes(self.repo_dir):
+            self.pending_images = 0
+            return
+        self.git.add(self.repo_dir)
+        self.git.commit(self.repo_dir, f"Update bundles ({self.pending_images} images)")
+        self.git.push()
+        self.pending_images = 0
 
-        # 只有JP服务器处理Spine
-        if self.server == "JP":
-            self.spine_roots = {
-                "spinecharacters": tempfile.mkdtemp(prefix="spine_characters_"),
-                "spinelobbies": tempfile.mkdtemp(prefix="spine_lobbies_"),
-            }
-            self.ssh_server = SSHServer(
-                host=os.environ["SERVER_HOST"],
-                username="root",
-                password=os.environ["SERVER_PASSWORD"],
-                port=22,
-            )
+    def _commit_if_needed(self):
+        if self.pending_images >= self.COMMIT_IMAGE_COUNT:
+            self._commit_push_resources()
 
-        self.data.setdefault(self.server, self.build_server_data())
+    def _process_zip(self, zip_path, pack):
+        zip_root = tempfile.mkdtemp(prefix="bundle_zip_")
+        try:
+            ZipUtils.extract_zip(zip_path, zip_root)
+            groups = self._build_groups(pack.get("BundleFiles", []), zip_root)
+            for group in groups.values():
+                if not self._is_changed(self.config.get(group["name"]), group):
+                    continue
+                self._extract_group(group)
+                self._commit_if_needed()
+            self._save_config()
+        finally:
+            shutil.rmtree(zip_root, ignore_errors=True)
 
-        bp = self.rd.get_bundle_packing()
-        if not bp:
-            print("[Init] 获取 BundlePacking 失败")
-            raise SystemExit(1)
+    def _download_pack(self, pack):
+        filename = pack["PackName"]
+        temp_dir = tempfile.mkdtemp(prefix="patch_pack_")
+        path = os.path.join(temp_dir, filename)
+        try:
+            result = self.downloader.get_bundle_files([filename], save_path=temp_dir)
+            if isinstance(result, dict):
+                result_path = result.get(filename) or result.get(os.path.basename(filename))
+                if result_path:
+                    path = result_path
+            elif isinstance(result, list) and result:
+                path = result[0]
+            elif isinstance(result, str):
+                path = result
+            if not os.path.isfile(path):
+                candidate = os.path.join(temp_dir, os.path.basename(filename))
+                if os.path.isfile(candidate):
+                    path = candidate
+            if not os.path.isfile(path):
+                raise FileNotFoundError(f"Pack download failed: {filename}")
+            return path, temp_dir
+        except Exception:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            raise
 
-        self.save_json(self.data)
-        self.temp_root = tempfile.mkdtemp(prefix="bundle_download_")
-        self.git_state = {"git": Git(self.repo_root), "pending": 0}
-        return bp
+    def _process_packs(self, catalog):
+        packs = catalog.get("FullPatchPacks", []) + catalog.get("UpdatePacks", [])
+        seen = set()
+        for pack in packs:
+            name = pack.get("PackName")
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            zip_path, temp_dir = self._download_pack(pack)
+            try:
+                self._process_zip(zip_path, pack)
+            finally:
+                shutil.rmtree(temp_dir, ignore_errors=True)
 
-    def commit(self):
-        self.git_state["git"].add(".")
-        if self.git_state["git"].has_staged_changes():
-            self.git_state["git"].commit(f"Update resources ({self.git_state['pending']} images)")
-            self.git_state["git"].push()
-            print(f"[Git] 最终提交 {self.git_state['pending']} 个新增图片")
-
-        project_git = Git(os.getcwd())
-        project_git.pull()
-        project_git.add(Config.bundle_config)
-        if project_git.has_staged_changes():
-            project_git.commit("Update bundle config")
-            project_git.push()
-            print(f"[Git] 已提交 BundleConfig：{Config.bundle_config}")
-
-    def cleanup(self):
-        if self.temp_root:
-            shutil.rmtree(self.temp_root, ignore_errors=True)
-        if self.repo_root:
-            shutil.rmtree(self.repo_root, ignore_errors=True)
-        for spine_root in self.spine_roots.values():
-            shutil.rmtree(spine_root, ignore_errors=True)
+    def _finalize(self):
+        if self.pending_images:
+            self._commit_push_resources()
+        self._save_config()
+        if os.path.abspath(Config.bundle_config).startswith(os.path.abspath(self.repo_dir) + os.sep):
+            self.git.add(Config.bundle_config)
+        else:
+            self.git.add(self.repo_dir, Config.bundle_config)
+        if self.git.has_changes(self.repo_dir):
+            self.git.commit(self.repo_dir, "Update bundle config")
+            self.git.push()
 
     def run(self):
-        bp = self.init()
         try:
-            groups = [("FullPatchPacks", bp.get("FullPatchPacks", [])), ("UpdatePacks", bp.get("UpdatePacks", []))]
-            total = sum(len(packs) for _, packs in groups)
-            index = 0
-            for pack_type, packs in groups:
-                for pack in packs:
-                    if not pack.get("PackName"):
-                        continue
-                    if self.find_processed_pack(pack_type, pack):
-                        print(f"[Skip] {pack['PackName']} 已处理")
-                        continue
-                    index += 1
-                    self.process_pack(pack, pack_type, index, total)
-            self.commit()
+            self._load_config()
+            self._clone()
+            catalog = self.downloader.get_bundle_packing()
+            self._process_packs(catalog)
+            self._finalize()
         finally:
-            self.cleanup()
+            self.ssh.close()
+            self.temp_dir.cleanup()

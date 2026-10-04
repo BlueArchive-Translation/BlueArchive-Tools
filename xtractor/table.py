@@ -23,17 +23,11 @@ from utils.download import ResourceDownloader
 from utils.git import Git
 from utils.regions import Server
 
+
 class TableProcess:
     def __init__(
         self, server: str = "JP", password: str = "", table_file_folder: str = "", extract_folder: str = "", flat_data_module_name: str = "FlatData"
     ) -> None:
-        """Extract files in table folder.
-
-        Args:
-            table_file_folder (str): Folder own table files.
-            extract_folder (str): Folder to store the extracted/repack data.
-            flat_data_module_name (str): Name path to import flat data module. Most like "Extracted.FlatData".
-        """
         self.table_file_folder = table_file_folder
         self.extract_folder = extract_folder
         self.server = server
@@ -42,41 +36,58 @@ class TableProcess:
 
         self.lower_fb_name_modules: dict[str, type] = {}
         self.lower_fb_name_modules_db: dict[str, type] = {}
-        self.dump_wrapper_lib: ModuleType
-        self.repack_wrapper_lib: ModuleType
+        self.dump_wrapper_lib: ModuleType | None = None
+        self.repack_wrapper_lib: ModuleType | None = None
 
         self.__import_modules()
 
     def __import_modules(self):
         try:
             flat_data_lib = importlib.import_module(self.flat_data_module_name)
+        except Exception as e:
+            notice(
+                f"Cannot import FlatData module. Make sure FlatData is available in Extracted folder. {e}",
+                "error",
+            )
+            return
+
+        try:
             excel_lib = importlib.import_module(
                 f"{self.flat_data_module_name}.Excel"
-            )
-            excel_db_lib = importlib.import_module(
-                f"{self.flat_data_module_name}.ExcelDB"
-            )
-            self.dump_wrapper_lib = importlib.import_module(
-                f"{self.flat_data_module_name}.dump_wrapper"
-            )
-            self.repack_wrapper_lib = importlib.import_module(
-                f"{self.flat_data_module_name}.repack_wrapper"
             )
             self.lower_fb_name_modules = {
                 t_name.lower(): t_class
                 for t_name, t_class in excel_lib.__dict__.items()
                 if isinstance(t_class, type)
             }
+        except Exception as e:
+            notice(f"Cannot import Excel module, skipped: {e}", "error")
+
+        try:
+            excel_db_lib = importlib.import_module(
+                f"{self.flat_data_module_name}.ExcelDB"
+            )
             self.lower_fb_name_modules_db = {
                 t_name.lower(): t_class
                 for t_name, t_class in excel_db_lib.__dict__.items()
                 if isinstance(t_class, type)
             }
         except Exception as e:
-            notice(
-                f"Cannot import FlatData module. Make sure FlatData is available in Extracted folder. {e}",
-                "error",
+            notice(f"Cannot import ExcelDB module, skipped: {e}", "error")
+
+        try:
+            self.dump_wrapper_lib = importlib.import_module(
+                f"{self.flat_data_module_name}.dump_wrapper"
             )
+        except Exception as e:
+            notice(f"Cannot import dump_wrapper module, skipped: {e}", "error")
+
+        try:
+            self.repack_wrapper_lib = importlib.import_module(
+                f"{self.flat_data_module_name}.repack_wrapper"
+            )
+        except Exception as e:
+            notice(f"Cannot import repack_wrapper module, skipped: {e}", "error")
 
     def _process_bytes_file(
         self, file_name: str, data: bytes, source: str = "Excel"
@@ -576,7 +587,7 @@ class TableTask:
         return False
 
     def prepare_table(self):
-#        self.prepare_flatdata()
+        self.prepare_flatdata()
 
         return TableExtract(
             server=self.server,

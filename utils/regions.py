@@ -121,7 +121,7 @@ class Server:
 
     def get_game_main_config(self, files_path) -> str:
         """ 获取GameMainConfig并返回json """
-        extractor = BundleExtractor(install_dir="tools", EXTRACT_DIR="Extracted")
+        extractor = BundleExtractor(install_dir="tools")
         config_data = {}
         if self.server == "GL":
             return config_data

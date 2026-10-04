@@ -8,7 +8,6 @@ from argparse import ArgumentParser
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from utils.gmail import GmailSMTP
 from utils.regions import Server
 from utils.config import Config
 from utils.util import FileUtils, IL2CppDumper, ZipUtils

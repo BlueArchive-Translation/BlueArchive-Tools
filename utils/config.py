@@ -20,7 +20,7 @@ class Config:
     APK_repositories = "https://github.com/BlueArchive-Translation/BA-APKSRC.git"
     API_repositories = "git@github.com:BlueArchive-Translation/BlueArchive-API.git"
     TableBundles_repositories = "git@github.com:beichen23333/BA-TableBundles.git"
-    Bundle_repositories_JP = "git@github.com:beichen23333/BA-Bundles-Extract-JP.git"
+    Bundle_repositories = "git@github.com:beichen23333/BA-Bundles-Extract-{server}.git"
 
     servers = {
         "JP": {
