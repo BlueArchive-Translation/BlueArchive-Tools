@@ -48,10 +48,8 @@ class BundlePublisher:
 
     def _build_groups(self, bundle_files, zip_root):
         groups = {}
-
         for bundle in bundle_files:
             filename = bundle.get("Name", "")
-
             if "textures" in filename:
                 extract_type = "Texture2D"
                 resource_type = "textures"
@@ -84,7 +82,10 @@ class BundlePublisher:
                 "extract_type": extract_type,
             })
 
-        print(f"[扫描] 找到 {len(groups)} 个 Bundle 分组，共 {sum(len(group['sources']) for group in groups.values())} 个 Bundle")
+        print(
+            f"[扫描] 找到 {len(groups)} 个 Bundle 分组，"
+            f"共 {sum(len(group['sources']) for group in groups.values())} 个 Bundle"
+        )
         return groups
 
     def _is_changed(self, group):
@@ -120,10 +121,17 @@ class BundlePublisher:
             return
 
         category, role = special
-        remote = os.path.join("/var/www/web", category, role)
+        remote = f"/var/www/web/{category}/{role}"
 
-        print(f"[上传] 特殊资源: {category}/{role}")
-        self.ssh.remove_dir(remote)
+        print(f"[上传] spine资源: {category}/{role}")
+
+        if self.ssh.exists(remote):
+            if not self.ssh.is_dir(remote):
+                self.ssh.remove(remote, force=True)
+            else:
+                self.ssh.remove_dir(remote)
+
+        self.ssh.mkdir(os.path.dirname(remote), parents=True)
         self.ssh.upload_directory(local_root, remote, create_parent=True)
 
     def _extract_group(self, group, zip_name):
