@@ -3,7 +3,6 @@ import os
 import re
 import shutil
 import tempfile
-from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from utils.download import ResourceDownloader
 from utils.util import ZipUtils
@@ -16,29 +15,6 @@ from xtractor.bundle import BundleExtractor
 spine_bundle = re.compile(r"(spinecharacters|spinelobbies)", re.I)
 spine_logical_name = re.compile(r"^(.*?)-.*?-(?:textures|textassets)-.*?\.bundle$", re.I)
 spine_name = re.compile(r"(?:spinecharacters|spinelobbies)-([^-]+)-", re.I)
-
-
-def _extract_bundle_worker(args):
-    bundle_path, extract_root, extract_type = args
-    try:
-        BundleExtractor().extract_bundle(
-            bundle_path,
-            extract_types=[extract_type],
-            extract_root=extract_root,
-            use_type_subdir=False,
-        )
-        resources = []
-
-        for root, _, files in os.walk(extract_root):
-            for name in files:
-                path = os.path.join(root, name)
-                resources.append({
-                    "name": os.path.relpath(path, extract_root).replace("\\", "/"),
-                    "size": os.path.getsize(path),
-                })
-        return resources, None
-    except Exception as e:
-        return [], str(e)
 
 
 class BundlePublisher:
@@ -55,6 +31,7 @@ class BundlePublisher:
             port=22,
         )
         self.downloader = ResourceDownloader(server, verbose=True)
+        self.bundle_extractor = BundleExtractor()
 
     def _logical_name(self, filename):
         match = spine_logical_name.match(filename)
@@ -157,36 +134,34 @@ class BundlePublisher:
         shutil.rmtree(target_root, ignore_errors=True)
         os.makedirs(target_root, exist_ok=True)
 
-        tasks = []
-        temp_roots = []
+        resources = []
 
         for source in group["sources"]:
             temp_root = tempfile.mkdtemp(prefix="bundle_extract_")
-            temp_roots.append(temp_root)
-            tasks.append((source["path"], temp_root, source["extract_type"]))
 
-        resources = []
-        try:
-            with ProcessPoolExecutor(max_workers=os.cpu_count() or 1) as executor:
-                futures = {
-                    executor.submit(_extract_bundle_worker, task): (source, temp_root)
-                    for task, source, temp_root in zip(tasks, group["sources"], temp_roots)
-                }
+            try:
+                print(f"[提取] Bundle: {source['name']}")
 
-                for future in as_completed(futures):
-                    source, temp_root = futures[future]
-                    result, error = future.result()
+                self.bundle_extractor.extract_bundle(
+                    source["path"],
+                    extract_types=[source["extract_type"]],
+                    extract_root=temp_root,
+                    use_type_subdir=False,
+                )
 
-                    if error:
-                        raise RuntimeError(f"extract failed: {source['name']}: {error}")
+                self._merge(temp_root, target_root)
 
-                    self._merge(temp_root, target_root)
-                    resources.extend(result)
-
-            print(f"[完成] {group['name']}，资源 {len(resources)} 个")
-        finally:
-            for temp_root in temp_roots:
+                for root, _, files in os.walk(temp_root):
+                    for name in files:
+                        path = os.path.join(root, name)
+                        resources.append({
+                            "name": os.path.relpath(path, temp_root).replace("\\", "/"),
+                            "size": os.path.getsize(path),
+                        })
+            finally:
                 shutil.rmtree(temp_root, ignore_errors=True)
+
+        print(f"[完成] {group['name']}，资源 {len(resources)} 个")
 
         self.config[group["name"]] = {
             "sources": {
