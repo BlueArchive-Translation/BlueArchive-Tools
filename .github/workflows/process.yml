@@ -49,8 +49,8 @@ env:
 
 jobs:
   extract:
+    if: ${{ (github.event.inputs.type || github.event.client_payload.type) != 'Bundle' }}
     runs-on: ubuntu-latest
-
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
@@ -92,3 +92,138 @@ jobs:
           YostarToken: ${{ secrets.YostarToken }}
         run: |
           python process.py "$SERVER" "$TYPE" "$ACTION"
+
+  bundle:
+    if: ${{ (github.event.inputs.type || github.event.client_payload.type) == 'Bundle' && (github.event.inputs.action || github.event.action) == 'Extract' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        index: [0, 1, 2, 3]
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: 设置 .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0'
+
+      - name: 设置 Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: 安装 SSH 密钥
+        uses: shimataro/ssh-key-action@v2
+        with:
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          known_hosts: unnecessary
+          if_key_exists: replace
+
+      - name: 配置 Git 登录信息
+        run: |
+          git config --global user.email "actions@github.com"
+          git config --global user.name "GitHub Actions"
+
+      - name: 安装依赖
+        run: |
+          pip install -r requirements.txt
+
+      - name: 运行 Bundle
+        shell: bash
+        env:
+          SERVER: ${{ github.event.inputs.server || github.event.client_payload.server }}
+          TYPE: ${{ github.event.inputs.type || github.event.client_payload.type }}
+          ACTION: ${{ github.event.inputs.action || github.event.action }}
+          YostarToken: ${{ secrets.YostarToken }}
+          MATRIX_INDEX: ${{ matrix.index }}
+          MATRIX_TOTAL: 4
+          BUNDLE_WORKERS: 4
+        run: |
+          python process.py "$SERVER" "$TYPE" "$ACTION"
+
+      - name: 上传 Bundle Config
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundle-config-${{ matrix.index }}
+          path: ${{ github.workspace }}/${{ env.BUNDLE_CONFIG_PATH }}
+          if-no-files-found: error
+
+  merge-bundle-config:
+    needs: bundle
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: 设置 Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: 下载 Bundle Config
+        uses: actions/download-artifact@v4
+        with:
+          pattern: bundle-config-*
+          path: bundle-configs
+          merge-multiple: false
+
+      - name: 合并 Bundle Config
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from utils.config import Config
+
+          target = Config.bundle_config
+          configs = []
+
+          for root, _, files in os.walk("bundle-configs"):
+              for name in files:
+                  if name == os.path.basename(target):
+                      configs.append(os.path.join(root, name))
+
+          merged = {}
+
+          if os.path.isfile(target):
+              with open(target, "r", encoding="utf-8") as f:
+                  merged = json.load(f)
+
+          for path in sorted(configs):
+              with open(path, "r", encoding="utf-8") as f:
+                  data = json.load(f)
+              merged.update(data)
+
+          os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
+
+          with open(target, "w", encoding="utf-8") as f:
+              json.dump(merged, f, ensure_ascii=False, indent=2)
+
+          print(f"[配置] 合并完成: {target}")
+          print(f"[配置] 共合并 {len(configs)} 个矩阵配置")
+          PY
+
+      - name: 配置 Git 登录信息
+        run: |
+          git config --global user.email "actions@github.com"
+          git config --global user.name "GitHub Actions"
+
+      - name: 提交 Bundle Config
+        shell: bash
+        run: |
+          CONFIG_PATH="$(python -c 'from utils.config import Config; print(Config.bundle_config)')"
+          git add "$CONFIG_PATH"
+
+          if git diff --cached --quiet; then
+            echo "[Git] Bundle 配置没有变化，跳过提交"
+            exit 0
+          fi
+
+          git commit -m "Update bundle config"
+          git push
