@@ -354,7 +354,7 @@ class BundlePublisher:
         with ProcessPoolExecutor(max_workers=workers) as executor:
             futures = {
                 executor.submit(
-                    _process_pack_worker,
+                    self._process_pack_worker,
                     pack,
                 ): pack
                 for pack in packs
