@@ -46,6 +46,7 @@ env:
   GH_TOKEN: ${{ secrets.UPDATE_TOKEN }}
   UPDATE_TOKEN: ${{ secrets.UPDATE_TOKEN }}
   GITHUB_REPOSITORY: ${{ github.repository }}
+  BUNDLE_CONFIG_PATH: config/bundle.json
 
 jobs:
   extract:
