@@ -130,9 +130,6 @@ class BaseBuilder:
         with multiprocessing.Pool(processes=self.workers) as pool:
             results = pool.map(_bundle_replace_worker, work_items)
 
-        success = sum(1 for _, ok in results if ok)
-        print(f"bundle文件修改完成，成功 {success}/{len(results)}。")
-
     def modify_sdk_url(self, sdkurl):
         """修改 Android/iOS/Windows 的 SDK 地址。"""
         if not sdkurl:

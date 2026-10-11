@@ -195,28 +195,13 @@ class Updater:
     def dump_il2cpp(self):
         dumper = IL2CppDumper(install_dir="tools")
 
-        metadata_path = os.path.abspath(
-            FileUtils.find_files(
-                "Temp",
-                [r"global-metadata\.dat"],
-                True,
-                True
-            )[0]
-        )
+        metadata_path = os.path.abspath(FileUtils.find_files("Temp", [r"global-metadata\.dat"], True, True)[0])
 
-        dumper.dump_il2cpp(
-            "cn",
-            "",
-            metadata_path,
-            os.path.abspath("Dumps/dump.cs")
-        )
+        dumper.dump_il2cpp("cn", "", metadata_path, os.path.abspath("Dumps/dump.cs"))
 
         print("成功生成dump.cs。")
 
-        dumper.compile_python(
-            os.path.join(os.path.abspath("Dumps"), "dump.cs"),
-            "FlatData"
-        )
+        dumper.compile_python(os.path.join(os.path.abspath("Dumps"), "dump.cs"), "FlatData")
 
         print("成功生成FlatData库。")
         shutil.rmtree("Temp")
@@ -309,7 +294,9 @@ class Updater:
             types.append("Build")
 
         for event_type in types:
-            resource_types = ["Table", "Media", "Bundle"] if event_type == "Extract" and self.server_name == "JP" else ["Table"]
+            resource_types = ["Table", "Media", "Bundle"] if event_type == "Extract" and self.server_name == "JP" else [
+                "Table"
+            ]
 
             for resource_type in resource_types:
                 payload = {

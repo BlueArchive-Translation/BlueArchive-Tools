@@ -107,11 +107,14 @@ def _extract_zip_worker(args):
                         relative = os.path.relpath(root, temp_root)
                         target = target_root if relative == "." else os.path.join(target_root, relative)
                         os.makedirs(target, exist_ok=True)
+
                         for name in files:
                             src = os.path.join(root, name)
                             dst = os.path.join(target, name)
+
                             if os.path.exists(dst):
                                 os.remove(dst)
+
                             shutil.move(src, dst)
                             resources.append(
                                 {
@@ -139,15 +142,18 @@ def _extract_zip_worker(args):
             )
 
         print(f"[ZIP] 处理完成: {zip_name}")
+
         return {
             "zip_name": zip_name,
             "result_root": result_root,
             "groups": results,
             "bundle_count": sum(len(group["sources"]) for group in groups.values()),
         }
+
     except Exception:
         shutil.rmtree(result_root, ignore_errors=True)
         raise
+
     finally:
         shutil.rmtree(zip_root, ignore_errors=True)
         shutil.rmtree(os.path.dirname(zip_path), ignore_errors=True)
@@ -182,11 +188,15 @@ class BundlePublisher:
 
     def _is_changed(self, group):
         old = self.config.get(group["name"])
+
         if not old:
             return True
+
         old_sources = old.get("sources", {})
+
         if len(old_sources) != len(group["sources"]):
             return True
+
         return any(
             old_sources.get(source["name"], {}).get("size") != source["size"]
             or old_sources.get(source["name"], {}).get("crc") != source["crc"]
@@ -198,6 +208,7 @@ class BundlePublisher:
             relative = os.path.relpath(root, source_root)
             target = target_root if relative == "." else os.path.join(target_root, relative)
             os.makedirs(target, exist_ok=True)
+
             for name in files:
                 src = os.path.join(root, name)
                 dst = os.path.join(target, name)
@@ -208,13 +219,15 @@ class BundlePublisher:
     def _upload_special(self, local_root, special):
         if not special:
             return
+
         category, role = special
-        remote = f"/var/www/web/{category}/{role}"
+        remote = f"/var/www/image/{category}/{role}"
         parent = os.path.dirname(remote)
         print(f"[上传] spine资源: {category}/{role}")
         self.ssh.remove(remote, recursive=True, force=True)
         self.ssh.mkdir(parent, parents=True)
         self.ssh.mkdir(remote, parents=True)
+
         for name in os.listdir(local_root):
             local_path = os.path.join(local_root, name)
             remote_path = f"{remote}/{name}"
@@ -252,30 +265,39 @@ class BundlePublisher:
                 continue
 
             target_root = os.path.join(self.repo_dir, zip_name, group["name"])
+
             print(f"[变化] {group['name']}")
+
             self._merge(group["path"], target_root)
             self.config[group["name"]] = current
             self._upload_special(target_root, group["special"])
             changed_count += 1
 
         shutil.rmtree(result["result_root"], ignore_errors=True)
+
         print(
             f"[ZIP] 应用完成: {zip_name}，"
             f"变化分组 {changed_count} 个，"
             f"处理 Bundle {result['bundle_count']} 个"
         )
+
         return result["bundle_count"]
 
     def _commit_resources(self, bundle_count=0):
         self.repo_git.pull()
         self.repo_git.add(".")
+
         if not self.repo_git.has_changes():
             print("[Git] 没有文件变化，跳过提交")
             return
+
         message = f"Update bundles ({bundle_count} bundles)"
+
         print(f"[Git] 提交: {message}")
+
         self.repo_git.commit(message)
         self.repo_git.push()
+
         print("[Git] 推送完成")
 
     def _process_zip(self, zip_path, pack):
@@ -292,11 +314,15 @@ class BundlePublisher:
                 [filename],
                 save_path=temp_dir,
             )
+
             path = os.path.join(temp_dir, filename)
+
             if not os.path.isfile(path):
                 raise FileNotFoundError(f"Pack download failed: {path}")
+
             print(f"[下载] 完成: {filename}")
             return path, temp_dir
+
         except Exception:
             shutil.rmtree(temp_dir, ignore_errors=True)
             raise
@@ -304,18 +330,24 @@ class BundlePublisher:
     def _process_pack_worker(self, pack):
         filename = pack["PackName"]
         temp_dir = tempfile.mkdtemp(prefix="patch_pack_")
+
         try:
             print(f"[下载] {filename}")
+
             self.downloader.get_bundle_files(
                 [filename],
                 save_path=temp_dir,
             )
+
             path = os.path.join(temp_dir, filename)
+
             if not os.path.isfile(path):
                 raise FileNotFoundError(f"Pack download failed: {path}")
+
             print(f"[下载] 完成: {filename}")
             zip_name = os.path.splitext(filename)[0]
             return _extract_zip_worker((path, pack, zip_name))
+
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -326,8 +358,10 @@ class BundlePublisher:
 
         for pack in packs:
             name = pack.get("PackName")
+
             if not name or name in seen:
                 continue
+
             seen.add(name)
             unique_packs.append(pack)
 
@@ -363,9 +397,11 @@ class BundlePublisher:
             for future in as_completed(futures):
                 pack = futures[future]
                 name = pack.get("PackName")
+
                 try:
                     result = future.result()
                     self._apply_result(result)
+
                 except Exception as e:
                     print(f"[错误] Pack 处理失败: {name}: {e}")
                     raise
@@ -377,7 +413,9 @@ class BundlePublisher:
             try:
                 with open(Config.bundle_config, "r", encoding="utf-8") as f:
                     self.config = json.load(f)
+
                 print(f"[配置] 已加载 Bundle 配置，共 {len(self.config)} 个记录")
+
             except (FileNotFoundError, json.JSONDecodeError):
                 self.config = {}
                 print("[配置] 未找到有效配置，按首次处理执行")
