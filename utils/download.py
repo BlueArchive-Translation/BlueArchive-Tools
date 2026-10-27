@@ -264,7 +264,7 @@ class ResourceDownloader:
                 url = f"{self.addressable_catalog_url}/AssetBundles/{self.platform}/{file}"
             else:
                 return file, None
-
+            print(url)
             if save_path:
                 file_path = os.path.join(save_path, file)
                 os.makedirs(os.path.dirname(file_path) or ".", exist_ok=True)

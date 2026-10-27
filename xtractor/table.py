@@ -533,7 +533,7 @@ class TableTask:
 
         if self.server == "JP":
             result = api.Queuing_GetAuthTicket(
-                YostarUID=33027791391,
+                YostarUID=37172998294,
                 YostarToken=os.getenv("YostarToken"),
                 ClientVersion=game_version
             )
