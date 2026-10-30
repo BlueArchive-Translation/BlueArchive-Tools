@@ -9,64 +9,36 @@ from utils.download import ResourceDownloader
 from utils.util import ZipUtils
 from utils.git import Git
 from utils.config import Config
-from utils.server import SSHServer
 from xtractor.bundle import BundleExtractor
-
-spine_bundle = re.compile(r"(spinecharacters|spinelobbies)", re.I)
-spine_logical_name = re.compile(r"^(.*?)-(?:textures|textassets)-.*?.bundle$", re.I)
-spine_name = re.compile(r"(?:spinecharacters|spinelobbies)-([^-]+)-", re.I)
 
 
 def _logical_name(filename):
-    match = spine_logical_name.match(filename)
-    if match:
-        return match.group(1)
-    return re.sub(r"_\d+\.bundle$", "", filename, flags=re.I)
-
-
-def _special_info(filename):
-    match = spine_bundle.search(filename)
-    role = spine_name.search(filename)
-    if not match or not role:
-        return None
-    return match.group(1).lower(), role.group(1)
+    match = re.match(r"^(.*?)-textures-.*?\.bundle$", filename, re.I)
+    return match.group(1) if match else re.sub(r"_\d+\.bundle$", "", filename, flags=re.I)
 
 
 def _build_groups(bundle_files, zip_root):
     groups = {}
     for bundle in bundle_files:
         filename = bundle.get("Name", "")
-        if "textures" in filename:
-            extract_type = "Texture2D"
-            resource_type = "textures"
-        elif "textassets" in filename and spine_bundle.search(filename):
-            extract_type = "TextAsset"
-            resource_type = "textassets"
-        else:
+        if re.search(r"(spinecharacters|spinelobbies)", filename, re.I):
+            print(f"[跳过] Spine Bundle 由独立流程处理: {filename}")
+            continue
+        if "textures" not in filename.lower():
             continue
         path = os.path.join(zip_root, filename)
         if not os.path.isfile(path):
             print(f"[跳过] ZIP 中不存在 Bundle: {filename}")
             continue
         logical_name = _logical_name(filename)
-        group = groups.setdefault(
-            logical_name,
-            {
-                "name": logical_name,
-                "special": _special_info(filename),
-                "sources": [],
-            },
-        )
-        group["sources"].append(
-            {
-                "path": path,
-                "name": filename,
-                "size": bundle.get("Size", 0),
-                "crc": bundle.get("Crc", 0),
-                "type": resource_type,
-                "extract_type": extract_type,
-            }
-        )
+        group = groups.setdefault(logical_name, {"name": logical_name, "sources": []})
+        group["sources"].append({
+            "path": path,
+            "name": filename,
+            "size": bundle.get("Size", 0),
+            "crc": bundle.get("Crc", 0),
+            "extract_type": "Texture2D",
+        })
     return groups
 
 
@@ -105,7 +77,11 @@ def _extract_zip_worker(args):
 
                     for root, _, files in os.walk(temp_root):
                         relative = os.path.relpath(root, temp_root)
-                        target = target_root if relative == "." else os.path.join(target_root, relative)
+                        target = (
+                            target_root
+                            if relative == "."
+                            else os.path.join(target_root, relative)
+                        )
                         os.makedirs(target, exist_ok=True)
 
                         for name in files:
@@ -128,7 +104,6 @@ def _extract_zip_worker(args):
             results.append(
                 {
                     "name": group["name"],
-                    "special": group["special"],
                     "sources": {
                         source["name"]: {
                             "size": source["size"],
@@ -166,12 +141,6 @@ class BundlePublisher:
         self.config = {}
         self.repo_git = Git(self.repo_dir)
         self.git = Git()
-        self.ssh = SSHServer(
-            host=os.environ["SERVER_HOST"],
-            username="root",
-            password=os.environ["SERVER_PASSWORD"],
-            port=22,
-        )
         self.downloader = ResourceDownloader(server, verbose=True)
         self.bundle_extractor = BundleExtractor()
         self.matrix_index = int(os.environ.get("MATRIX_INDEX", "0"))
@@ -179,9 +148,6 @@ class BundlePublisher:
 
     def _logical_name(self, filename):
         return _logical_name(filename)
-
-    def _special_info(self, filename):
-        return _special_info(filename)
 
     def _build_groups(self, bundle_files, zip_root):
         return _build_groups(bundle_files, zip_root)
@@ -216,28 +182,6 @@ class BundlePublisher:
                     os.remove(dst)
                 shutil.move(src, dst)
 
-    def _upload_special(self, local_root, special):
-        if not special:
-            return
-
-        category, role = special
-        remote = f"/var/www/image/{category}/{role}"
-        parent = os.path.dirname(remote)
-        print(f"[上传] spine资源: {category}/{role}")
-        self.ssh.remove(remote, recursive=True, force=True)
-        self.ssh.mkdir(parent, parents=True)
-        self.ssh.mkdir(remote, parents=True)
-
-        for name in os.listdir(local_root):
-            local_path = os.path.join(local_root, name)
-            remote_path = f"{remote}/{name}"
-            self.ssh.upload(
-                local_path,
-                remote_path,
-                recursive=os.path.isdir(local_path),
-                create_parent=True,
-            )
-
     def _apply_result(self, result):
         zip_name = result["zip_name"]
         changed_count = 0
@@ -270,7 +214,6 @@ class BundlePublisher:
 
             self._merge(group["path"], target_root)
             self.config[group["name"]] = current
-            self._upload_special(target_root, group["special"])
             changed_count += 1
 
         shutil.rmtree(result["result_root"], ignore_errors=True)
@@ -363,7 +306,18 @@ class BundlePublisher:
                 continue
 
             seen.add(name)
-            unique_packs.append(pack)
+            bundle_files = pack.get("BundleFiles", [])
+            has_regular_texture = any(
+                "textures" in item.get("Name", "").lower()
+                and not re.search(
+                    r"(spinecharacters|spinelobbies)", item.get("Name", ""), re.I
+                )
+                for item in bundle_files
+            )
+            if has_regular_texture:
+                unique_packs.append(pack)
+            else:
+                print(f"[跳过] ZIP 不含普通 Texture Bundle: {name}")
 
         packs = [
             pack
@@ -436,5 +390,4 @@ class BundlePublisher:
             )
         finally:
             print("[结束] 清理临时资源")
-            self.ssh.close()
             shutil.rmtree(self.repo_dir, ignore_errors=True)

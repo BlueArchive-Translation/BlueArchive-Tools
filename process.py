@@ -13,7 +13,8 @@ if __name__ == "__main__":
         if args.type == "Table":
             TablePublisher(args.server).run()
         elif args.type == "Bundle":
-            BundlePublisher(args.server).run()
+            pass
+#            BundlePublisher(args.server).run()
         elif args.type == "Media":
             pass  # Media Extract
 

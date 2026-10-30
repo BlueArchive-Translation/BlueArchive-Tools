@@ -1,0 +1,52 @@
+name: spine
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+env:
+  PYTHONUTF8: "1"
+  PYTHONUNBUFFERED: "1"
+  SERVER_HOST: ${{ secrets.SERVER_HOST }}
+  SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
+
+jobs:
+  spine:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: 设置 .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0'
+
+      - name: 设置 Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: 安装 SSH 密钥
+        uses: shimataro/ssh-key-action@v2
+        with:
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          known_hosts: unnecessary
+          if_key_exists: replace
+
+      - name: 配置 Git 登录信息
+        run: |
+          git config --global user.email "actions@github.com"
+          git config --global user.name "GitHub Actions"
+
+      - name: 安装依赖
+        run: |
+          pip install -r requirements.txt
+
+      - name: 提取并上传 JP Spine
+        run: python -m extract.extract_spine
