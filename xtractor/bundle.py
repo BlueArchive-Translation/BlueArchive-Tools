@@ -506,6 +506,7 @@ class BundleExtractor(ToolManager):
         extract_root: str = "output",
         use_type_subdir: bool = True,
         auto_rename_suffix: Optional[List[str]] = None,
+        strict: bool = False,
     ) -> None:
         """
         提取 Bundle 资源。
@@ -546,11 +547,14 @@ class BundleExtractor(ToolManager):
                         if path.isfile(path.join(tmp_dir, f))
                     ]
                     if result.returncode != 0:
-                        self._print_error(
+                        message = (
                             f"提取 {obj_type} 失败\n"
                             f"stdout: {result.stdout.strip()}\n"
                             f"stderr: {result.stderr.strip()}"
                         )
+                        self._print_error(message)
+                        if strict:
+                            raise RuntimeError(message)
                         continue
                     if not exported_files:
                         self._print_info(f"{obj_type}: 没有找到可提取资源")
@@ -576,6 +580,8 @@ class BundleExtractor(ToolManager):
                     self._print_info(f"{obj_type}: 成功提取 {success_count}/{len(exported_files)}")
         except Exception as e:
             self._print_error(f"提取 Bundle 失败: {res_path}", e)
+            if strict:
+                raise
 
     def multiprocess_extract_worker(
         self,
