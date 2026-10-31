@@ -54,4 +54,19 @@ jobs:
       - name: 安装依赖
         run: pip install -r requirements.txt
       - name: 并发提取并上传 JP Spine
+        id: spine
+        continue-on-error: true
         run: python -m extract.extract_spine "${{ matrix.category }}"
+      - name: 上传失败时保存 Bundle 提取进度和服务器 manifest 快照
+        if: steps.spine.outcome == 'failure' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spine-recovery-${{ matrix.category }}-${{ github.run_id }}
+          path: |
+            spine-progress.json
+            spine-failure-manifest.json
+          if-no-files-found: warn
+          retention-days: 30
+      - name: 标记任务失败
+        if: steps.spine.outcome == 'failure'
+        run: exit 1

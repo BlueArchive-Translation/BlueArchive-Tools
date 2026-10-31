@@ -22,6 +22,8 @@ REMOTE_CATEGORY_ROOTS = {
     "spinelobbies": f"{REMOTE_ROOT}/03_MemoryLobbies",
 }
 REMOTE_MANIFEST = f"{REMOTE_ROOT}/.spine_manifest.json"
+REMOTE_PROGRESS = f"{REMOTE_ROOT}/.spine_progress_{{category}}.json"
+LOCAL_PROGRESS = os.getenv("SPINE_PROGRESS_FILE", "spine-progress.json")
 LEGACY_MANIFEST = f"{REMOTE_CATEGORY_ROOTS['spinecharacters']}/.character_spine_manifest.json"
 EXTRACT_TYPES = ["Texture2D", "TextAsset"]
 SPINE_PATTERN = re.compile(r"spinecharacters|spinelobbies", re.I)
@@ -31,14 +33,24 @@ UPLOAD_WORKERS = max(1, min(6, int(os.getenv("SPINE_UPLOAD_WORKERS", "3"))))
 
 
 def get_spine_info(filename):
-    name = filename or ""
-    match = re.search(r"(spinecharacters|spinelobbies)-([^-]+)-", name, re.I)
+    name = os.path.basename(filename or "")
+    match = re.search(r"(spinecharacters|spinelobbies)-([^\-]+)", name, re.I)
     if not match:
-        match = re.search(r"(spinecharacters|spinelobbies)[_-]([^-_]+)[_-]", name, re.I)
+        match = re.search(r"(spinecharacters|spinelobbies)[_-]([^\-_]+)", name, re.I)
     if not match:
         return None
-    role = match.group(2).strip("_-")
-    return {"category": match.group(1).lower(), "role": role, "common": role.lower() in {"mxcommon", "common"}}
+    category, role_token = match.group(1).lower(), match.group(2).strip("_-")
+    role_lower = role_token.lower()
+    # _mxdependency 是 Bundle 的依赖标记，不是角色名；绝不能作为角色上传。
+    if role_lower in {"mxdependency", "dependency"}:
+        return None
+    if role_lower in {"mxcommon", "common"}:
+        role = "mxcommon"
+    elif role_lower.startswith("mxdependency") or role_lower.startswith("dependency"):
+        return None
+    else:
+        role = role_token
+    return {"category": category, "role": role, "common": role.lower() in {"mxcommon", "common"}}
 
 
 def collect_spine_packs(catalog, category=None):
@@ -77,11 +89,42 @@ class SpinePublisher:
         self.extractor = None
         self.ssh = SSHServer(host=os.environ["SERVER_HOST"], username="root", password=os.environ["SERVER_PASSWORD"], port=22)
         self.manifest = {"version": 2, "bundles": {}, "roles": {}}
+        self.progress = {"version": 3, "category": category, "updated_at": None, "bundles": {}, "roles": {}}
         self.log_lock = threading.Lock()
+        self.progress_lock = threading.Lock()
 
     def log(self, message):
         with self.log_lock:
             print(message, flush=True)
+
+    def _progress_save(self):
+        """Write progress locally after each state transition (atomic replace)."""
+        self.progress["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        temp_path = f"{LOCAL_PROGRESS}.tmp-{os.getpid()}-{threading.get_ident()}"
+        with open(temp_path, "w", encoding="utf-8") as stream:
+            json.dump(self.progress, stream, ensure_ascii=False, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp_path, LOCAL_PROGRESS)
+
+    def _progress_bundle(self, name, record, status, **extra):
+        with self.progress_lock:
+            old = self.progress.setdefault("bundles", {}).get(name, {})
+            item = {**old, **record, "status": status, **extra}
+            self.progress["bundles"][name] = item
+            self._progress_save()
+
+    def _progress_role(self, role, status, **extra):
+        with self.progress_lock:
+            old = self.progress.setdefault("roles", {}).get(role, {})
+            self.progress["roles"][role] = {**old, "status": status, **extra}
+            self._progress_save()
+
+    def _upload_progress_success(self):
+        """Only publish the progress JSON to server after this category completes."""
+        remote = REMOTE_PROGRESS.format(category=self.category)
+        self.ssh.upload_file(LOCAL_PROGRESS, remote, create_parent=True)
+        self.log(f"[进度记录] 成功运行，已上传到服务器: {remote}")
 
     def load_manifest(self):
         try:
@@ -99,7 +142,10 @@ class SpinePublisher:
     @staticmethod
     def infer_role_from_asset(filename):
         # 保留完整资源名，例如 Yoshimi_spr.png 对应 yoshimi_spr 目录。
-        return os.path.splitext(os.path.basename(filename))[0].strip().lower()
+        role = os.path.splitext(os.path.basename(filename))[0].strip().lower()
+        if role in {"mxdependency", "dependency", "mxcommon", "common"} or role.startswith(("mxdependency_", "dependency_")):
+            return ""
+        return role
 
     @staticmethod
     def _role_records(local_root):
@@ -162,7 +208,18 @@ class SpinePublisher:
         remote_stage = f"{remote_parent}/{stage_name}"
         remote_backup = f"{remote_parent}/.{role}.backup-{token}"
         try:
-            self.ssh.mkdir(remote_parent, parents=True)
+            mkdir_error = None
+            for attempt in range(1, 4):
+                try:
+                    self.ssh.execute(f"mkdir -p {shlex.quote(remote_parent)}", timeout=60)
+                    mkdir_error = None
+                    break
+                except Exception as exc:
+                    mkdir_error = exc
+                    self.log(f"[SSH 重试 {attempt}/3] mkdir {remote_parent} 失败: {exc}")
+                    time.sleep(attempt * 3)
+            if mkdir_error:
+                raise RuntimeError(f"远程目录创建失败（重试 3 次）: {remote_parent}: {mkdir_error}")
             self.log(f"[上传] {self.category}/{role} ({file_count} 个文件)")
             # 上传到临时目录，完成后再原子切换，避免服务器出现半成品角色目录。
             self.ssh.upload(local_stage, remote_parent, recursive=True, create_parent=True)
@@ -250,6 +307,8 @@ class SpinePublisher:
         work_root = tempfile.mkdtemp(prefix=f"jp_spine_{self.category}_")
         try:
             self.load_manifest()
+            self.progress = {"version": 3, "category": self.category, "updated_at": None, "bundles": {}, "roles": {}}
+            self._progress_save()
             catalog = self.downloader.get_bundle_packing()
             packs = collect_spine_packs(catalog, self.category)
             if not packs:
@@ -265,6 +324,7 @@ class SpinePublisher:
                     record = {"pack": pack_name, "size": bundle.get("Size", 0), "crc": bundle.get("Crc", 0), "file_hash": bundle.get("FileHash"), "signature": bundle.get("Signature"), "category": info["category"], "role": info["role"]}
                     current_bundles[name] = record
                     bundle_info[(pack_name, name)] = info
+                    self._progress_bundle(name, record, "pending", pack=pack_name)
             old_bundles = self.manifest.get("bundles", {})
             changed_roles = set()
             for name, record in current_bundles.items():
@@ -278,9 +338,10 @@ class SpinePublisher:
                 changed_roles.add("*" if role in {"mxcommon", "common"} else role)
             if not changed_roles:
                 self.log(f"[记录] {self.category} Bundle 无变化，跳过提取和上传")
+                self._upload_progress_success()
                 return
             old_role_names = {key.split("/", 1)[1] for key in self.manifest.get("roles", {}) if key.startswith(self.category + "/")}
-            all_named_roles = {record["role"].lower() for record in current_bundles.values() if record["role"].lower() not in {"mxcommon", "common"}}
+            all_named_roles = {record["role"].lower() for record in current_bundles.values() if record["role"].lower() not in {"mxcommon", "common", "mxdependency", "dependency"} and not record["role"].lower().startswith(("mxdependency", "dependency"))}
             if "*" in changed_roles:
                 target_roles = set(all_named_roles) | old_role_names
             else:
@@ -311,6 +372,7 @@ class SpinePublisher:
                     for future in as_completed(futures):
                         key = futures[future]
                         files = future.result()
+                        self._progress_bundle(key[1], current_bundles[key[1]], "extracted", role="mxcommon", files=[os.path.basename(f) for f in files])
                         for path in files:
                             role = self.infer_role_from_asset(os.path.basename(path))
                             if role:
@@ -347,17 +409,21 @@ class SpinePublisher:
                 for role in sorted(target_roles):
                     if role_pending[role] == 0:
                         stage = role_stages[role]
+                        self._progress_role(role, "uploading", bundles=[name for _, name in common_items])
                         upload_futures[upload_pool.submit(self.upload_role_atomic, stage, role)] = role
                 extraction_futures = {}
                 with ThreadPoolExecutor(max_workers=DEFAULT_WORKERS) as extract_pool:
                     for role, items in role_items.items():
                         for key in items:
+                            self._progress_bundle(key[1], current_bundles[key[1]], "extracting", role=role)
                             out_dir = os.path.join(work_root, "role_extract", hashlib.sha1((key[0] + key[1]).encode()).hexdigest()[:12])
                             extraction_futures[extract_pool.submit(self.extract_one, bundle_paths[key], out_dir)] = (role, key)
                     completed_by_role = {role: {} for role in target_roles}
                     for future in as_completed(extraction_futures):
                         role, key = extraction_futures[future]
-                        completed_by_role[role][key] = future.result()
+                        extracted_files = future.result()
+                        completed_by_role[role][key] = extracted_files
+                        self._progress_bundle(key[1], current_bundles[key[1]], "extracted", role=role, files=[os.path.basename(f) for f in extracted_files])
                         role_pending[role] -= 1
                         self.log(f"[提取完成] {key[1]}，角色 {role} 剩余 Bundle={role_pending[role]}")
                         if role_pending[role] == 0:
@@ -367,6 +433,7 @@ class SpinePublisher:
                                     destination = os.path.join(stage, os.path.basename(source))
                                     shutil.copy2(source, destination)
                             if sum(len(files) for _, _, files in os.walk(stage)):
+                                self._progress_role(role, "uploading", bundles=[name for _, name in role_items.get(role, [])])
                                 upload_futures[upload_pool.submit(self.upload_role_atomic, stage, role)] = role
                             else:
                                 self.log(f"[跳过] 角色无可上传资源: {role}")
@@ -374,21 +441,59 @@ class SpinePublisher:
                     role = upload_futures[future]
                     if future.result():
                         role_records[role] = self._role_records(role_stages[role])
+                        self._progress_role(role, "uploaded", files=[item["name"] for item in role_records[role]])
                         self.log(f"[上传完成] {self.category}/{role}")
                     else:
                         self.log(f"[上传跳过] {self.category}/{role}")
 
             failed_roles = target_roles - set(role_records)
             if failed_roles:
+                for role in failed_roles:
+                    self._progress_role(role, "failed", error="role upload/extraction did not complete")
                 raise RuntimeError(f"以下角色未能成功上传，manifest 不更新: {', '.join(sorted(failed_roles))}")
             # 只有所有目标角色上传成功后才提交该分类的增量记录。
             current_roles_for_manifest = (old_role_names - removed_roles) | all_current_roles
             self.save_manifest_category(current_bundles, current_roles_for_manifest, role_records, removed_roles)
+            self._upload_progress_success()
         finally:
             self.ssh.close()
             shutil.rmtree(work_root, ignore_errors=True)
 
 
+def write_failure_manifest(category, error):
+    # GitHub Actions 将此 JSON 作为 artifact 上传，供人工恢复/下次运行继承。
+    path = os.getenv("SPINE_FAILURE_MANIFEST", "spine-failure-manifest.json")
+    payload = {"version": 3, "category": category, "failed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "error": repr(error), "progress": {}, "bundles": {}, "roles": {}}
+    progress_path = os.getenv("SPINE_PROGRESS_FILE", "spine-progress.json")
+    try:
+        if os.path.isfile(progress_path):
+            with open(progress_path, "r", encoding="utf-8") as stream:
+                payload["progress"] = json.load(stream)
+    except Exception as progress_error:
+        payload["progress_read_error"] = repr(progress_error)
+    # 独立输出可手动上传/作为下次运行输入的进度 JSON；不把错误包装层当作进度文件。
+    if payload.get("progress"):
+        with open(progress_path, "w", encoding="utf-8") as stream:
+            json.dump(payload["progress"], stream, ensure_ascii=False, indent=2)
+    try:
+        publisher = SpinePublisher(category)
+        try:
+            publisher.load_manifest()
+            payload["bundles"] = publisher.manifest.get("bundles", {})
+            payload["roles"] = publisher.manifest.get("roles", {})
+        finally:
+            publisher.ssh.close()
+    except Exception as manifest_error:
+        payload["manifest_read_error"] = repr(manifest_error)
+    with open(path, "w", encoding="utf-8") as stream:
+        json.dump(payload, stream, ensure_ascii=False, indent=2)
+    print(f"[失败记录] 已写出 {path}")
+
+
 if __name__ == "__main__":
     category = sys.argv[1] if len(sys.argv) > 1 else os.getenv("SPINE_CATEGORY", "spinecharacters")
-    SpinePublisher(category).run()
+    try:
+        SpinePublisher(category).run()
+    except Exception as exc:
+        write_failure_manifest(category, exc)
+        raise
